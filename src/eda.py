@@ -1,4 +1,3 @@
-import itertools
 import os
 
 import matplotlib
@@ -171,34 +170,6 @@ def run_eda():
     invoice_baskets_all[["InvoiceNo", "product_count", "products"]].head(20).to_csv(
         f"{REPORTS_DIR}/invoice_product_baskets_preview.csv", index=False
     )
-
-    description_counts = {}
-    for value in basket_df["Description_clean"]:
-        if value is None:
-            continue
-        description_counts[value] = description_counts.get(value, 0) + 1
-    top_products = {
-        product
-        for product, _ in sorted(
-            description_counts.items(), key=lambda item: item[1], reverse=True
-        )[:500]
-    }
-    pair_counts = {}
-    for products in invoice_baskets_all["products"]:
-        filtered_products = sorted(product for product in products if product in top_products)[:50]
-        for a, b in itertools.combinations(filtered_products, 2):
-            pair_counts[(a, b)] = pair_counts.get((a, b), 0) + 1
-    top_pairs = pd.DataFrame(
-        [
-            {"product_1": a, "product_2": b, "cooccurrence_count": count}
-            for (a, b), count in pair_counts.items()
-        ]
-    )
-    if not top_pairs.empty:
-        top_pairs = top_pairs.sort_values("cooccurrence_count", ascending=False).head(20)
-    else:
-        top_pairs = pd.DataFrame(columns=["product_1", "product_2", "cooccurrence_count"])
-    top_pairs.to_csv(f"{REPORTS_DIR}/top_product_pairs_preview.csv", index=False)
 
     missing = df.isna().sum().sort_values(ascending=False)
     fig, ax = plt.subplots(figsize=(10, 5))
