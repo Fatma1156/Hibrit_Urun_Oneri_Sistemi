@@ -94,7 +94,7 @@ def compute_metrics(X, labels: np.ndarray, name: str) -> dict:
 # ELBOW YÖNTEMİ (WCSS)
 # ──────────────────────────────────────────
 
-def find_best_k_elbow(X, K=range(2, 11)) -> int:
+def find_best_k_elbow(X, K=range(2, 16)) -> int:
     """
     WCSS (Within-Cluster Sum of Squares) değerlerini hesaplar,
     Elbow grafiğini kaydeder ve dirsek noktasını döndürür.
@@ -132,7 +132,7 @@ def find_best_k_elbow(X, K=range(2, 11)) -> int:
 # K-MEANS İÇİN ÇOK KRİTERLİ K SEÇİMİ
 # ──────────────────────────────────────────
 
-def select_best_k_kmeans(X, K=range(2, 11)) -> tuple[int, pd.DataFrame]:
+def select_best_k_kmeans(X, K=range(2, 16)) -> tuple[int, pd.DataFrame]:
     """K-Means için k değerini üç metrik rank toplamına göre seçer."""
     rows = []
     for k in K:
@@ -169,7 +169,7 @@ def select_best_k_kmeans(X, K=range(2, 11)) -> tuple[int, pd.DataFrame]:
 # BIC/AIC (GMM İÇİN)
 # ──────────────────────────────────────────
 
-def find_best_k_bic(X, K=range(2, 11)) -> int:
+def find_best_k_bic(X, K=range(2, 16)) -> int:
     """
     GMM için BIC ve AIC değerlerini hesaplar.
     Düşük BIC = daha iyi model.
@@ -373,6 +373,10 @@ def run_gmm(X, k):
 # ──────────────────────────────────────────
 
 def run_clustering(features: pd.DataFrame):
+    # Model, rapor ve grafik kayıtlarında klasör hatası oluşmaması için garanti oluşturulur.
+    os.makedirs("outputs/models", exist_ok=True)
+    os.makedirs("outputs/reports", exist_ok=True)
+    os.makedirs("outputs/figures", exist_ok=True)
 
     X, feature_cols = scale_data(features)
     K = range(2, 16)
