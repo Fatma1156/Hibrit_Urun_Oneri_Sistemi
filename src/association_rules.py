@@ -1,5 +1,6 @@
 import os
 
+import numpy as np
 import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
 
@@ -103,28 +104,48 @@ def filter_recent_pairs(df: pd.DataFrame,
 # 3. HİBRİT PUANLAMA
 # ──────────────────────────────────────────
 
-def compute_hybrid_score(rules: pd.DataFrame,
-                          w_confidence: float = 0.4,
-                          w_lift: float = 0.6) -> pd.DataFrame:
+def compute_hybrid_score(rules: pd.DataFrame) -> pd.DataFrame:
     """
-    Öneri Skoru = w1 * Confidence + w2 * Normalized_Lift
-    Opsiyonel: Leverage ve Conviction da hesaplanır.
+    Association rule skorunu TOPSIS yöntemiyle hesaplar.
+    Tüm kriterler fayda kriteridir: confidence, lift, leverage, conviction.
     """
     if rules.empty:
         return rules
 
-    # Lift normalize et (0-1 arasına)
-    lift_min = rules["lift"].min()
-    lift_max = rules["lift"].max()
-    if lift_max > lift_min:
-        rules["lift_norm"] = (rules["lift"] - lift_min) / (lift_max - lift_min)
-    else:
-        rules["lift_norm"] = 1.0
+    criteria = [
+        col for col in ["confidence", "lift", "leverage", "conviction"]
+        if col in rules.columns
+    ]
+    if not criteria:
+        rules["hybrid_score"] = 0.0
+        rules["ranking_method"] = "TOPSIS"
+        return rules
 
-    rules["hybrid_score"] = (
-        w_confidence * rules["confidence"] +
-        w_lift       * rules["lift_norm"]
+    matrix = (
+        rules[criteria]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+        .astype(float)
+        .to_numpy()
     )
+
+    # Vektör normalizasyonu ve eşit ağırlık
+    denominator = np.sqrt((matrix ** 2).sum(axis=0))
+    denominator[denominator == 0] = 1
+    weights = np.ones(len(criteria)) / len(criteria)
+    weighted = (matrix / denominator) * weights
+
+    # Tüm kriterler fayda kriteri olduğu için ideal maksimum, negatif ideal minimumdur.
+    ideal = weighted.max(axis=0)
+    negative_ideal = weighted.min(axis=0)
+    distance_to_ideal = np.sqrt(((weighted - ideal) ** 2).sum(axis=1))
+    distance_to_negative = np.sqrt(((weighted - negative_ideal) ** 2).sum(axis=1))
+    score_denominator = distance_to_ideal + distance_to_negative
+    score_denominator[score_denominator == 0] = 1
+
+    rules["hybrid_score"] = distance_to_negative / score_denominator
+    rules["ranking_method"] = "TOPSIS"
+    print("      Hybrid score TOPSIS yöntemiyle hesaplandı.")
 
     return rules
 
