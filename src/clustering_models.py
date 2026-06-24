@@ -22,15 +22,33 @@ FEATURES_FOR_CLUSTERING = [
     "Recency", "Frequency", "Monetary",
     "total_items", "avg_basket_size",
     "avg_unit_price", "unique_products", "unique_days",
+    "avg_basket_value", "purchase_span_days", "avg_days_between_orders",
 ]
 
 
+def _load_selected_features(features: pd.DataFrame) -> list[str]:
+    """Varsa korelasyon seçimi dosyasından model feature listesini okur."""
+    selected_features_path = "outputs/reports/selected_features.txt"
+    if os.path.exists(selected_features_path):
+        with open(selected_features_path, "r", encoding="utf-8") as file:
+            selected = [line.strip() for line in file if line.strip()]
+        cols = [col for col in selected if col in features.columns]
+        print(f"  Seçilmiş feature listesi okundu → {selected_features_path}")
+    else:
+        cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+        print("  selected_features.txt bulunamadı; varsayılan feature listesi kullanılacak.")
+
+    if not cols:
+        raise ValueError("Kümeleme için kullanılabilecek sayısal feature bulunamadı.")
+    return cols
+
+
 def scale_data(features: pd.DataFrame):
-    cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+    cols = _load_selected_features(features)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(features[cols])
     joblib.dump(scaler, "outputs/models/scaler.pkl")
-    print(f"  Ölçekleme yapıldı ({len(cols)} özellik)")
+    print(f"  Ölçekleme yapıldı ({len(cols)} özellik): {', '.join(cols)}")
     return X_scaled
 
 
@@ -296,12 +314,22 @@ def run_clustering(features: pd.DataFrame):
         "dbscan": labels_dbscan,
         "gmm":    labels_gmm,
     }
+    best_display_map = {
+        "kmeans": "KMeans",
+        "dbscan": "DBSCAN",
+        "gmm":    "GMM",
+    }
+    best_algorithm_name = best_display_map.get(best_name, "KMeans")
     best_labels = label_map.get(best_name, labels_km)
 
-    print(f"\n  ✅ En iyi algoritma: {best['algorithm']} "
+    with open("outputs/reports/best_clustering_model.txt", "w", encoding="utf-8") as file:
+        file.write(f"{best_algorithm_name}\n")
+
+    print(f"\n  ✅ En iyi algoritma: {best_algorithm_name} "
           f"(Silhouette: {best['silhouette']:.4f}  |  "
           f"DB: {best['davies_bouldin']:.4f}  |  "
           f"CH: {best['calinski_harabasz']:.1f})")
+    print("  En iyi algoritma kaydedildi → outputs/reports/best_clustering_model.txt")
 
     # Sonuçları kaydet
     results_df = pd.DataFrame({
@@ -310,7 +338,7 @@ def run_clustering(features: pd.DataFrame):
         "dbscan_label":   labels_dbscan,
         "gmm_label":      labels_gmm,
         "best_label":     best_labels,
-        "best_algorithm": best["algorithm"],
+        "best_algorithm": best_algorithm_name,
     })
     results_df.to_csv("outputs/reports/clustering_results.csv", index=False)
 
