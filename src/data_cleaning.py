@@ -105,13 +105,83 @@ def clean_data(**_ignored_options):
     )
 
     before = len(df)
-    df["Description"] = df["Description"].astype(str).str.strip().str.upper()
+    df["Description"] = (
+        df["Description"]
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .str.replace(r"\s+", " ", regex=True)
+    )
     _log_step(
         log_rows,
         "Description standardizasyonu",
         before,
         len(df),
-        "Description için yalnızca strip ve upper standardizasyonu yapıldı; ek filtre uygulanmadı.",
+        "Description strip, upper ve çoklu boşlukları tek boşluğa indirme ile standartlaştırıldı.",
+    )
+
+    before = len(df)
+    df = df[df["Description"] != ""].copy()
+    _log_step(
+        log_rows,
+        "Boş Description kayıtlarını kaldır",
+        before,
+        len(df),
+        "strip sonrasında boş kalan ürün açıklamaları kaldırıldı.",
+    )
+
+    before = len(df)
+    df = df[~df["Description"].str.match(r"^\d+$", na=False)].copy()
+    _log_step(
+        log_rows,
+        "Sayısal Description kayıtlarını kaldır",
+        before,
+        len(df),
+        "Sadece rakamlardan oluşan açıklamalar gerçek ürün adı olmadığı için kaldırıldı.",
+    )
+
+    special_stockcodes = {"POST", "DOT", "C2", "M", "BANK CHARGES", "CRUK", "PADS"}
+    stockcode_clean = df["StockCode"].astype(str).str.strip().str.upper()
+    before = len(df)
+    df = df[~stockcode_clean.isin(special_stockcodes)].copy()
+    _log_step(
+        log_rows,
+        "Özel StockCode kayıtlarını kaldır",
+        before,
+        len(df),
+        "Lojistik, manuel işlem ve muhasebe StockCode kayıtları kaldırıldı; D koduna dokunulmadı.",
+    )
+
+    non_product_descriptions = {
+        "POSTAGE",
+        "DOTCOM POSTAGE",
+        "CARRIAGE",
+        "MANUAL",
+        "BANK CHARGES",
+        "CRUK COMMISSION",
+        "PADS TO MATCH ALL CUSHIONS",
+        "EBAY",
+    }
+    before = len(df)
+    df = df[~df["Description"].isin(non_product_descriptions)].copy()
+    _log_step(
+        log_rows,
+        "Ürün olmayan Description kayıtlarını kaldır",
+        before,
+        len(df),
+        "Öneri sistemi ürünü olmayan açıklamalar büyük-küçük harf duyarsız şekilde kaldırıldı.",
+    )
+
+    non_product_keywords = ["EBAY", "UNSALEABLE", "DESTROYED"]
+    keyword_pattern = "|".join(non_product_keywords)
+    before = len(df)
+    df = df[~df["Description"].str.contains(keyword_pattern, na=False)].copy()
+    _log_step(
+        log_rows,
+        "Description anahtar kelime filtresi",
+        before,
+        len(df),
+        "EBAY, UNSALEABLE veya DESTROYED içeren açıklamalar kaldırıldı.",
     )
 
     before = len(df)
