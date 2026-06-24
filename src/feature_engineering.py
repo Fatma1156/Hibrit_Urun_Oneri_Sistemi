@@ -81,8 +81,9 @@ def _build_features(df: pd.DataFrame, snapshot_date: pd.Timestamp) -> pd.DataFra
     features["purchase_span_days"] = (
         features["last_purchase_date"] - features["first_purchase_date"]
     ).dt.days.clip(lower=0)
+    order_gap_denominator = (features["Frequency"] - 1).replace(0, np.nan)
     features["avg_days_between_orders"] = (
-        features["purchase_span_days"] / safe_frequency
+        features["purchase_span_days"] / order_gap_denominator
     ).replace([np.inf, -np.inf], np.nan).fillna(0)
     features = features.drop(columns=["first_purchase_date", "last_purchase_date"])
 
@@ -178,28 +179,28 @@ def _select_features_by_correlation(features: pd.DataFrame, correlation_threshol
 
 def create_customer_features():
     """
-    Train verisi üzerinden özellik üretir; test müşterileri için ayrı özellik seti oluşturur.
-    Feature engineering sonrası korelasyon tabanlı model feature seçimini raporlar.
+    Yalnızca train işlem verisi üzerinden müşteri özellikleri üretir.
+    Test dönemi feature üretiminde kullanılmaz; böylece data leakage engellenir.
     """
     _ensure_output_dirs()
 
     train_df = pd.read_csv("data/processed/online_retail_train.csv", parse_dates=["InvoiceDate"])
-    test_df = pd.read_csv("data/processed/online_retail_test.csv", parse_dates=["InvoiceDate"])
-    full_df = pd.read_csv("data/processed/online_retail_clean.csv", parse_dates=["InvoiceDate"])
 
-    snapshot = full_df["InvoiceDate"].max() + pd.Timedelta(days=1)
+    # Snapshot yalnızca train döneminin son tarihi + 1 gün olarak belirlenir.
+    snapshot = train_df["InvoiceDate"].max() + pd.Timedelta(days=1)
 
     train_features = _build_features(train_df, snapshot)
-    test_features = _build_features(test_df, snapshot)
-
     selected_features = _select_features_by_correlation(train_features, correlation_threshold=0.80)
 
     train_features.to_csv("data/processed/customer_features.csv")
     train_features.to_csv("data/processed/customer_features_train.csv")
-    test_features.to_csv("data/processed/customer_features_test.csv")
+
+    # Eski çalışmalardan kalmış test feature dosyası varsa leakage olmaması için kaldırılır.
+    test_feature_path = "data/processed/customer_features_test.csv"
+    if os.path.exists(test_feature_path):
+        os.remove(test_feature_path)
 
     print(f"  Train müşteri   : {len(train_features):,}  ({train_features.shape[1]} özellik)")
-    print(f"  Test müşteri    : {len(test_features):,}")
     print(f"  Modelde kullanılacak feature listesi: {', '.join(selected_features)}")
     print(f"  RFM Segment dağılımı (train):\n{train_features['rfm_label'].value_counts().to_string()}")
     print("  Özellik mühendisliği tamamlandı.")

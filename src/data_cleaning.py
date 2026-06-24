@@ -214,8 +214,22 @@ def clean_data(**_ignored_options):
         "TotalPrice = Quantity * UnitPrice; satır silinmedi.",
     )
 
+    # Zaman bazlı split: geçmiş %80 train, gelecek %20 test.
+    df = df.sort_values("InvoiceDate").reset_index(drop=True)
+    split_idx = int(len(df) * 0.8)
+    train_df = df.iloc[:split_idx].copy()
+    test_df = df.iloc[split_idx:].copy()
+
     pd.DataFrame(log_rows).to_csv(f"{REPORTS_DIR}/cleaning_log.csv", index=False)
     df.to_csv(f"{PROCESSED_DIR}/online_retail_clean.csv", index=False)
+    train_df.to_csv(f"{PROCESSED_DIR}/online_retail_train.csv", index=False)
+    test_df.to_csv(f"{PROCESSED_DIR}/online_retail_test.csv", index=False)
+
+    print("\n  ── Zaman Bazlı Train/Test Ayrımı ──")
+    print(f"  Train dönem satır sayısı : {len(train_df):,}")
+    print(f"  Test dönem satır sayısı  : {len(test_df):,}")
+    print(f"  Train tarih aralığı      : {train_df['InvoiceDate'].min()} → {train_df['InvoiceDate'].max()}")
+    print(f"  Test tarih aralığı       : {test_df['InvoiceDate'].min()} → {test_df['InvoiceDate'].max()}")
 
     print("\n  ── Final Temizlik Özeti ──")
     print(f"  Final satır sayısı   : {len(df):,}")
@@ -224,6 +238,7 @@ def clean_data(**_ignored_options):
     print(f"  Final fatura sayısı  : {df['InvoiceNo'].nunique():,}")
     print("  Temizlik raporu kaydedildi → outputs/reports/cleaning_log.csv")
     print("  Temiz veri kaydedildi → data/processed/online_retail_clean.csv")
+    print("  Zaman bazlı train/test dosyaları kaydedildi → data/processed/")
     print("  Veri temizleme tamamlandı.")
 
     return df

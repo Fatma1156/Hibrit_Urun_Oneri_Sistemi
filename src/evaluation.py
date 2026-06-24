@@ -1,5 +1,4 @@
 import pandas as pd
-from src.recommendation import predict_segment_for_features
 
 
 def get_final_algorithm() -> tuple[str, str]:
@@ -41,28 +40,15 @@ def parse_consequents(val) -> list:
     return [v.strip() for v in val.split(",") if v.strip()]
 
 
-def get_segment_for_customer(cid, label_col, clustering_df,
-                              test_features, segments):
-    """Müşterinin belirli algoritmaya göre segment ID'sini döndürür."""
+def get_segment_for_customer(cid, label_col, clustering_df):
+    """Train döneminde segmenti bilinen müşterinin segment ID'sini döndürür."""
     row = clustering_df[clustering_df["CustomerID"] == cid]
-    if not row.empty:
-        seg = row.iloc[0][label_col]
-        if seg != -1:
-            return int(seg)
-
-    # Clustering'de yoksa özelliklerden tahmin et
-    if not test_features.empty and cid in test_features.index:
-        r = test_features.loc[cid]
-        return predict_segment_for_features(
-            num_transactions=int(r.get("Frequency", 1)),
-            total_items=int(r.get("total_items", 1)),
-            total_spent=float(r.get("Monetary", 0.0)),
-            verbose=False
-        )
-
-    # Fallback: en kalabalık segment
-    valid = clustering_df[clustering_df[label_col] != -1]
-    return int(valid[label_col].value_counts().idxmax())
+    if row.empty:
+        return None
+    seg = row.iloc[0][label_col]
+    if seg == -1:
+        return None
+    return int(seg)
 
 
 def evaluate_algorithm(algo_name: str,
@@ -70,8 +56,6 @@ def evaluate_algorithm(algo_name: str,
                         train_df: pd.DataFrame,
                         test_df: pd.DataFrame,
                         clustering_df: pd.DataFrame,
-                        test_features: pd.DataFrame,
-                        segments: pd.DataFrame,
                         k: int = 5) -> dict:
     """
     Tek bir algoritma için Precision@K ve Recall@K hesaplar.
@@ -88,15 +72,18 @@ def evaluate_algorithm(algo_name: str,
         lambda x: parse_consequents(x)[0] if parse_consequents(x) else ""
     )
 
-    test_customers = test_df["CustomerID"].unique().tolist()
-    print(f"  Toplam test müşteri sayısı: {len(test_customers):,}")
+    all_test_customers = test_df["CustomerID"].unique().tolist()
+    train_customers = set(train_df["CustomerID"].unique().tolist())
+    test_customers = [cid for cid in all_test_customers if cid in train_customers]
+    print(f"  Toplam test müşteri sayısı: {len(all_test_customers):,}")
+    print(f"  Train geçmişi olan uygun test müşteri sayısı: {len(test_customers):,}")
 
     results = []
 
     for cid in test_customers:
-        seg = get_segment_for_customer(
-            cid, label_col, clustering_df, test_features, segments
-        )
+        seg = get_segment_for_customer(cid, label_col, clustering_df)
+        if seg is None:
+            continue
 
         bought_train = (
             train_df[train_df["CustomerID"] == cid]["Description"]
@@ -168,21 +155,10 @@ def run_evaluation(k: int = 5):
 
     clustering_df = pd.read_csv("outputs/reports/clustering_results.csv")
 
-    segments = pd.read_csv("data/processed/customer_segments.csv",
-                            index_col="CustomerID")
-
-    try:
-        test_features = pd.read_csv(
-            "data/processed/customer_features_test.csv",
-            index_col="CustomerID"
-        )
-    except FileNotFoundError:
-        test_features = pd.DataFrame()
-
     result = evaluate_algorithm(
         algo_name, label_col,
         train_df, test_df,
-        clustering_df, test_features, segments,
+        clustering_df,
         k=k
     )
 
