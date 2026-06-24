@@ -56,7 +56,8 @@ def get_segment_for_customer(cid, label_col, clustering_df,
         return predict_segment_for_features(
             num_transactions=int(r.get("Frequency", 1)),
             total_items=int(r.get("total_items", 1)),
-            total_spent=float(r.get("Monetary", 0.0))
+            total_spent=float(r.get("Monetary", 0.0)),
+            verbose=False
         )
 
     # Fallback: en kalabalık segment
@@ -142,19 +143,12 @@ def evaluate_algorithm(algo_name: str,
 
     p_col, r_col = f"Precision@{k}", f"Recall@{k}"
     print(f"  Değerlendirilen müşteri sayısı: {len(df_res):,}")
-    print("  İlk 10 müşteri için kısa değerlendirme:")
-    for _, row in df_res.head(10).iterrows():
-        print(
-            f"    Müşteri {int(row['CustomerID'])} | "
-            f"Segment {int(row['segment'])} | "
-            f"Precision@{k}={row[p_col]:.4f} | "
-            f"Recall@{k}={row[r_col]:.4f}"
-        )
 
     precision = round(df_res[p_col].mean(), 4)
     recall = round(df_res[r_col].mean(), 4)
     print(f"  Precision@{k}: {precision:.4f}")
     print(f"  Recall@{k}: {recall:.4f}")
+    print("  Precision@K ve Recall@K tüm test müşterileri üzerinden hesaplanmıştır.")
 
     return {
         "algorithm":           algo_name,

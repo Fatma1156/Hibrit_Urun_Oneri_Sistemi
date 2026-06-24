@@ -67,8 +67,11 @@ def _build_new_customer_features(num_transactions: int,
     }
 
 
-def _print_prediction_example(row: pd.DataFrame, segment: int):
+def _print_prediction_example(row: pd.DataFrame, segment: int, verbose: bool = True):
     """Terminalde yalnızca ilk 10 yeni müşteri tahmin detayını gösterir."""
+    if not verbose:
+        return
+
     global _prediction_print_count, _prediction_limit_message_printed
 
     if _prediction_print_count < _PREDICTION_PRINT_LIMIT:
@@ -88,7 +91,8 @@ def predict_segment_for_features(num_transactions: int,
                                   unique_products: int | None = None,
                                   unique_days: int | None = None,
                                   purchase_span_days: int | None = None,
-                                  avg_unit_price: float | None = None) -> int:
+                                  avg_unit_price: float | None = None,
+                                  verbose: bool = True) -> int:
     """Yeni müşteriyi eğitimdeki scaler + K-Means pipeline'ı ile segmentler."""
     selected_features = _load_selected_features()
     scaler = joblib.load("outputs/models/scaler.pkl")
@@ -109,7 +113,7 @@ def predict_segment_for_features(num_transactions: int,
 
     X = scaler.transform(row[selected_features])
     segment = int(kmeans.predict(X)[0])
-    _print_prediction_example(row, segment)
+    _print_prediction_example(row, segment, verbose=verbose)
     return segment
 
 
@@ -246,7 +250,8 @@ def run_recommendation_demo():
             recency=nc.get("recency"),
             unique_products=nc.get("unique_products"),
             unique_days=nc.get("unique_days"),
-            purchase_span_days=nc.get("purchase_span_days")
+            purchase_span_days=nc.get("purchase_span_days"),
+            verbose=True
         )
         print(f"\n  {nc['label']}  →  Tahmin Edilen Segment: {seg}")
         recs = recommend_products(segment_id=seg, top_n=5)
