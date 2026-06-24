@@ -18,29 +18,6 @@ def _ensure_output_dirs():
     os.makedirs(FIGURES_DIR, exist_ok=True)
 
 
-def _iqr_report(df: pd.DataFrame, columns: list[str], factor: float = 1.5) -> pd.DataFrame:
-    """EDA için satır silmeden IQR aykırı değer özet raporu üretir."""
-    rows = []
-    for col in columns:
-        q1 = df[col].quantile(0.25)
-        q3 = df[col].quantile(0.75)
-        iqr = q3 - q1
-        lower = q1 - factor * iqr
-        upper = q3 + factor * iqr
-        mask = (df[col] < lower) | (df[col] > upper)
-        rows.append({
-            "column": col,
-            "q1": q1,
-            "q3": q3,
-            "iqr": iqr,
-            "lower_bound": lower,
-            "upper_bound": upper,
-            "outlier_count": int(mask.sum()),
-            "outlier_rate": float(mask.mean()),
-        })
-    return pd.DataFrame(rows)
-
-
 def _sample_values(series: pd.Series, limit: int = 5) -> str:
     """Kolon profili için ilk benzersiz değerleri string olarak döndürür."""
     samples = []
@@ -143,6 +120,10 @@ def _special_stockcodes_report(df: pd.DataFrame):
         .sort_values(["count", "StockCode", "Description"], ascending=[False, True, True])
     )
     report.to_csv(f"{REPORTS_DIR}/special_stockcodes_report.csv", index=False)
+    return {
+        "record_count": len(special_examples),
+        "stockcode_count": report["StockCode"].nunique() if not report.empty else 0,
+    }
 
 
 def _save_histogram(df: pd.DataFrame, column: str, path: str, title: str):
@@ -152,17 +133,6 @@ def _save_histogram(df: pd.DataFrame, column: str, path: str, title: str):
     ax.set_title(title)
     ax.set_xlabel(column)
     ax.set_ylabel("Frekans")
-    plt.tight_layout()
-    plt.savefig(path)
-    plt.close()
-
-
-def _save_boxplot(df: pd.DataFrame, column: str, path: str, title: str):
-    """Sayısal değişken boxplot grafiğini kaydeder."""
-    fig, ax = plt.subplots(figsize=(8, 4))
-    df[column].plot(kind="box", ax=ax, vert=False)
-    ax.set_title(title)
-    ax.set_xlabel(column)
     plt.tight_layout()
     plt.savefig(path)
     plt.close()
@@ -202,7 +172,7 @@ def run_eda():
     column_profile.to_csv(f"{REPORTS_DIR}/eda_column_profile.csv", index=False)
 
     _description_quality_report(df)
-    _special_stockcodes_report(df)
+    special_stockcode_summary = _special_stockcodes_report(df)
 
     # TotalPrice yalnızca EDA içindeki sayısal özet ve korelasyon için geçici analiz sütunudur.
     analysis_df = df.copy()
@@ -213,14 +183,6 @@ def run_eda():
 
     correlation = analysis_df[["Quantity", "UnitPrice", "TotalPrice"]].corr(numeric_only=True)
     correlation.to_csv(f"{REPORTS_DIR}/eda_correlation_matrix.csv")
-
-    outlier_report = _iqr_report(analysis_df, ["Quantity", "UnitPrice", "TotalPrice"])
-    outlier_report.to_csv(f"{REPORTS_DIR}/eda_outlier_report.csv", index=False)
-
-    print("\n  Aykırı değer analizi (IQR):")
-    for _, row in outlier_report.iterrows():
-        print(f"  {row['column']:<10} → {int(row['outlier_count']):,} potansiyel aykırı değer")
-    print("  EDA aşamasında aykırı değerler yalnızca analiz edildi, hiçbir kayıt kaldırılmadı.")
 
     # Sepet analizleri için Description kalıcı değiştirilmez; geçici temiz alan kullanılır.
     basket_df = df.copy()
@@ -248,6 +210,26 @@ def run_eda():
     )
 
     missing = df.isna().sum().sort_values(ascending=False)
+    missing_nonzero = missing[missing > 0]
+    print("\n  ── Eksik Veri Özeti ──")
+    if missing_nonzero.empty:
+        print("  Eksik değer bulunamadı.")
+    else:
+        print(missing_nonzero.to_string())
+
+    print("\n  ── Duplicate Özeti ──")
+    print(f"  Duplicate kayıt sayısı: {df.duplicated().sum():,}")
+
+    print("\n  ── Special StockCode Özeti ──")
+    print(
+        "  Gerçek ürün olmayabilecek kayıt sayısı: "
+        f"{special_stockcode_summary['record_count']:,}"
+    )
+    print(
+        "  Farklı özel StockCode sayısı: "
+        f"{special_stockcode_summary['stockcode_count']:,}"
+    )
+
     fig, ax = plt.subplots(figsize=(10, 5))
     missing.plot(kind="bar", ax=ax, color="coral")
     ax.set_title("Eksik Değer Sayıları")
@@ -260,8 +242,6 @@ def run_eda():
 
     _save_histogram(df, "Quantity", f"{FIGURES_DIR}/eda_quantity_histogram.png", "Quantity Histogram")
     _save_histogram(df, "UnitPrice", f"{FIGURES_DIR}/eda_unitprice_histogram.png", "UnitPrice Histogram")
-    _save_boxplot(df, "Quantity", f"{FIGURES_DIR}/eda_quantity_boxplot.png", "Quantity Boxplot")
-    _save_boxplot(df, "UnitPrice", f"{FIGURES_DIR}/eda_unitprice_boxplot.png", "UnitPrice Boxplot")
 
     fig, ax = plt.subplots(figsize=(6, 5))
     sns.heatmap(correlation, annot=True, fmt=".2f", cmap="coolwarm", ax=ax)
