@@ -20,10 +20,17 @@ from src.clustering_models   import run_clustering
 from src.association_rules   import run_association_rules
 from src.recommendation      import run_recommendation_demo
 from src.evaluation          import run_evaluation
+import os
 
+def ensure_output_dirs():
+    os.makedirs("outputs/reports", exist_ok=True)
+    os.makedirs("outputs/figures", exist_ok=True)
+    os.makedirs("outputs/models", exist_ok=True)
 
 def main():
-
+    
+    ensure_output_dirs()
+    
     print("\n" + "="*55)
     print("   HİBRİT ÜRÜN ÖNERİ SİSTEMİ — BAŞLADI")
     print("="*55 + "\n")
