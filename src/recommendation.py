@@ -1,6 +1,10 @@
 import pandas as pd
-import numpy as np
 import joblib
+
+
+_PREDICTION_PRINT_LIMIT = 10
+_prediction_print_count = 0
+_prediction_limit_message_printed = False
 
 
 def get_customer_segment(customer_id: int) -> int:
@@ -11,33 +15,106 @@ def get_customer_segment(customer_id: int) -> int:
     return int(segments["segment"].value_counts().idxmax())
 
 
+def _load_selected_features() -> list[str]:
+    """Eğitimde kullanılan seçilmiş feature sırasını dosyadan okur."""
+    with open("outputs/reports/selected_features.txt", "r", encoding="utf-8") as file:
+        return [line.strip() for line in file if line.strip()]
+
+
+def _safe_divide(numerator: float, denominator: float) -> float:
+    """Sıfıra bölme olmadan oran hesaplar."""
+    return numerator / denominator if denominator else 0.0
+
+
+def _build_new_customer_features(num_transactions: int,
+                                 total_items: int,
+                                 total_spent: float,
+                                 recency: int | None = None,
+                                 unique_products: int | None = None,
+                                 unique_days: int | None = None,
+                                 purchase_span_days: int | None = None,
+                                 avg_unit_price: float | None = None) -> dict:
+    """Yeni müşteri için eğitimdeki feature mantığına uyumlu değerleri üretir."""
+    frequency = max(int(num_transactions), 0)
+    items = max(int(total_items), 0)
+    monetary = float(total_spent)
+
+    if avg_unit_price is None:
+        avg_unit_price = _safe_divide(monetary, items)
+    if unique_products is None:
+        # Ürün çeşitliliği doğrudan verilmediyse alışveriş hacminden temkinli tahmin edilir.
+        unique_products = min(items, max(1, frequency * 2)) if items else 0
+    if purchase_span_days is None:
+        # Siparişler arası gün hesabı için minimum anlamlı alışveriş aralığı varsayılır.
+        purchase_span_days = max(frequency - 1, 0)
+    if unique_days is None:
+        unique_days = min(frequency, purchase_span_days + 1) if frequency else 0
+    if recency is None:
+        recency = 30
+
+    return {
+        "Recency": recency,
+        "Frequency": frequency,
+        "Monetary": monetary,
+        "total_items": items,
+        "avg_basket_size": _safe_divide(items, frequency),
+        "avg_unit_price": float(avg_unit_price),
+        "unique_products": int(unique_products),
+        "unique_days": int(unique_days),
+        "avg_basket_value": _safe_divide(monetary, frequency),
+        "purchase_span_days": int(purchase_span_days),
+        "avg_days_between_orders": _safe_divide(float(purchase_span_days), frequency),
+    }
+
+
+def _print_prediction_example(row: pd.DataFrame, segment: int, verbose: bool = True):
+    """Terminalde yalnızca ilk 10 yeni müşteri tahmin detayını gösterir."""
+    if not verbose:
+        return
+
+    global _prediction_print_count, _prediction_limit_message_printed
+
+    if _prediction_print_count < _PREDICTION_PRINT_LIMIT:
+        print("  Yeni müşteri feature değerleri:")
+        print(row.to_string(index=False))
+        print(f"  Tahmin edilen segment: {segment}")
+        _prediction_print_count += 1
+    elif not _prediction_limit_message_printed:
+        print("  ... diğer müşteriler gösterilmedi")
+        _prediction_limit_message_printed = True
+
+
 def predict_segment_for_features(num_transactions: int,
                                   total_items: int,
-                                  total_spent: float) -> int:
+                                  total_spent: float,
+                                  recency: int | None = None,
+                                  unique_products: int | None = None,
+                                  unique_days: int | None = None,
+                                  purchase_span_days: int | None = None,
+                                  avg_unit_price: float | None = None,
+                                  verbose: bool = True) -> int:
+    """Yeni müşteriyi eğitimdeki scaler + K-Means pipeline'ı ile segmentler."""
+    selected_features = _load_selected_features()
     scaler = joblib.load("outputs/models/scaler.pkl")
-    best   = joblib.load("outputs/models/best_clustering.pkl")
-    algo   = best["algorithm"]
+    kmeans = joblib.load("outputs/models/kmeans.pkl")
 
-    feature_names = scaler.feature_names_in_
-    row = pd.DataFrame(
-        data=np.zeros((1, len(feature_names))),
-        columns=feature_names
+    feature_values = _build_new_customer_features(
+        num_transactions=num_transactions,
+        total_items=total_items,
+        total_spent=total_spent,
+        recency=recency,
+        unique_products=unique_products,
+        unique_days=unique_days,
+        purchase_span_days=purchase_span_days,
+        avg_unit_price=avg_unit_price,
     )
-    if "Frequency"   in row.columns: row["Frequency"]   = num_transactions
-    if "total_items" in row.columns: row["total_items"] = total_items
-    if "Monetary"    in row.columns: row["Monetary"]    = total_spent
+    row = pd.DataFrame([{feature: feature_values.get(feature, 0.0)
+                         for feature in selected_features}])
 
-    X = scaler.transform(row)
-
-    if algo == "kmeans":
-        model = joblib.load("outputs/models/kmeans.pkl")
-        return int(model.predict(X)[0])
-    elif algo == "gmm":
-        model = joblib.load("outputs/models/gmm.pkl")
-        return int(model.predict(X)[0])
-    else:
-        segments = pd.read_csv("data/processed/customer_segments.csv")
-        return int(segments["segment"].value_counts().idxmax())
+    X = scaler.transform(row[selected_features])
+    segment = int(kmeans.predict(X)[0])
+    _print_prediction_example(row, segment, verbose=verbose)
+    return segment
 
 
 def parse_consequents(val) -> list:
@@ -155,18 +232,26 @@ def run_recommendation_demo():
     print("\n  [B] Yeni Müşteri Tahmini")
     new_customers = [
         {"num_transactions": 2,  "total_items": 15,  "total_spent": 45.0,
-         "label": "Az Harcayan (Yeni)"},
+         "recency": 90, "unique_products": 6, "unique_days": 2,
+         "purchase_span_days": 14, "label": "Az Harcayan (Yeni)"},
         {"num_transactions": 20, "total_items": 300, "total_spent": 1800.0,
-         "label": "Sık Alışveriş Yapan"},
+         "recency": 7, "unique_products": 85, "unique_days": 18,
+         "purchase_span_days": 180, "label": "Sık Alışveriş Yapan"},
         {"num_transactions": 5,  "total_items": 80,  "total_spent": 500.0,
-         "label": "Orta Segment"},
+         "recency": 35, "unique_products": 25, "unique_days": 5,
+         "purchase_span_days": 60, "label": "Orta Segment"},
     ]
 
     for nc in new_customers:
         seg = predict_segment_for_features(
             num_transactions=nc["num_transactions"],
             total_items=nc["total_items"],
-            total_spent=nc["total_spent"]
+            total_spent=nc["total_spent"],
+            recency=nc.get("recency"),
+            unique_products=nc.get("unique_products"),
+            unique_days=nc.get("unique_days"),
+            purchase_span_days=nc.get("purchase_span_days"),
+            verbose=True
         )
         print(f"\n  {nc['label']}  →  Tahmin Edilen Segment: {seg}")
         recs = recommend_products(segment_id=seg, top_n=5)

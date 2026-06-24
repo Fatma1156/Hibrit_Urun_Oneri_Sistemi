@@ -14,6 +14,27 @@ NOISE_ITEMS = {
     "MANUAL", "ADJUST", "CHECK", "TEST", "DISCOUNT"
 }
 
+
+def get_best_clustering_algorithm() -> tuple[str, str]:
+    """En iyi kümeleme algoritmasını rapordan okur; dosya yoksa KMeans kullanır."""
+    path = "outputs/reports/best_clustering_model.txt"
+    label_map = {
+        "kmeans": ("kmeans_label", "KMeans"),
+        "k-means": ("kmeans_label", "KMeans"),
+        "dbscan": ("dbscan_label", "DBSCAN"),
+        "gmm": ("gmm_label", "GMM"),
+    }
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            raw_name = file.read().strip()
+    except FileNotFoundError:
+        raw_name = "KMeans"
+
+    label_col, algo_name = label_map.get(raw_name.lower(), ("kmeans_label", "KMeans"))
+    print(f"  Birliktelik analizi yalnızca en iyi algoritma için çalıştırılıyor: {algo_name}")
+    return label_col, algo_name
+
 def build_basket(df: pd.DataFrame) -> pd.DataFrame:
     # Anlamsız kalemleri temizle
     df = df[~df["Description"].str.upper().isin(NOISE_ITEMS)].copy()
@@ -224,6 +245,10 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
         print(f"    Segment {seg_id}: {len(seg_df)} işlem, "
               f"{basket.shape[1]} ürün")
 
+        if basket.empty or basket.shape[1] < 2:
+            print(f"      Segment {seg_id} atlandı: birliktelik analizi için yeterli ürün yok.")
+            continue
+
         rules = mine_rules(basket, seg_df)
 
         if rules.empty:
@@ -260,40 +285,31 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
 
 def run_association_rules():
     df_train = pd.read_csv("data/processed/online_retail_train.csv")
+    label_col, algo_name = get_best_clustering_algorithm()
 
-    algorithms = [
-        ("kmeans_label", "KMeans"),
-        ("dbscan_label", "DBSCAN"),
-        ("gmm_label",    "GMM"),
-    ]
+    # DBSCAN/GMM gibi diğer algoritmalar için Apriori çalıştırılmaz;
+    # gereksiz bellek tüketimini önlemek için yalnızca seçilen algoritma işlenir.
+    rules_df = run_rules_for_algorithm(df_train, label_col, algo_name)
 
-    summary_rows = []
-    all_combined = []
-
-    for label_col, algo_name in algorithms:
-        rules_df = run_rules_for_algorithm(df_train, label_col, algo_name)
-        if not rules_df.empty:
-            all_combined.append(rules_df)
-            summary_rows.append({
-                "algorithm":       algo_name,
-                "n_rules":         len(rules_df),
-                "avg_lift":        round(rules_df["lift"].mean(), 4),
-                "avg_confidence":  round(rules_df["confidence"].mean(), 4),
-                "avg_hybrid":      round(rules_df["hybrid_score"].mean(), 4),
-                "max_lift":        round(rules_df["lift"].max(), 4),
-                "n_general":       int((rules_df.get("rule_type", "") == "General").sum()),
-                "n_personalized":  int((rules_df.get("rule_type", "") == "Personalized").sum()),
-            })
-        else:
-            summary_rows.append({"algorithm": algo_name, "n_rules": 0,
-                                  "avg_lift": 0, "avg_confidence": 0,
-                                  "avg_hybrid": 0, "max_lift": 0,
-                                  "n_general": 0, "n_personalized": 0})
-
-    if all_combined:
-        pd.concat(all_combined, ignore_index=True).to_csv(
-            "outputs/reports/association_rules.csv", index=False
-        )
+    if not rules_df.empty:
+        rules_df.to_csv("outputs/reports/association_rules.csv", index=False)
+        summary_rows = [{
+            "algorithm":       algo_name,
+            "n_rules":         len(rules_df),
+            "avg_lift":        round(rules_df["lift"].mean(), 4),
+            "avg_confidence":  round(rules_df["confidence"].mean(), 4),
+            "avg_hybrid":      round(rules_df["hybrid_score"].mean(), 4),
+            "max_lift":        round(rules_df["lift"].max(), 4),
+            "n_general":       int((rules_df.get("rule_type", "") == "General").sum()),
+            "n_personalized":  int((rules_df.get("rule_type", "") == "Personalized").sum()),
+        }]
+    else:
+        summary_rows = [{
+            "algorithm": algo_name, "n_rules": 0,
+            "avg_lift": 0, "avg_confidence": 0,
+            "avg_hybrid": 0, "max_lift": 0,
+            "n_general": 0, "n_personalized": 0,
+        }]
 
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv("outputs/reports/association_rules_comparison.csv",
