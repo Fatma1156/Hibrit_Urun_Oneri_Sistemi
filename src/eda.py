@@ -210,16 +210,17 @@ def run_eda():
 
     numeric_summary = analysis_df[["Quantity", "UnitPrice", "TotalPrice"]].describe().T
     numeric_summary.to_csv(f"{REPORTS_DIR}/eda_numeric_summary.csv")
-    print("\n  Quantity describe():")
-    print(df["Quantity"].describe().to_string())
-    print("\n  UnitPrice describe():")
-    print(df["UnitPrice"].describe().to_string())
 
     correlation = analysis_df[["Quantity", "UnitPrice", "TotalPrice"]].corr(numeric_only=True)
     correlation.to_csv(f"{REPORTS_DIR}/eda_correlation_matrix.csv")
 
-    outlier_report = _iqr_report(df, ["Quantity", "UnitPrice"])
+    outlier_report = _iqr_report(analysis_df, ["Quantity", "UnitPrice", "TotalPrice"])
     outlier_report.to_csv(f"{REPORTS_DIR}/eda_outlier_report.csv", index=False)
+
+    print("\n  Aykırı değer analizi (IQR):")
+    for _, row in outlier_report.iterrows():
+        print(f"  {row['column']:<10} → {int(row['outlier_count']):,} potansiyel aykırı değer")
+    print("  EDA aşamasında aykırı değerler yalnızca analiz edildi, hiçbir kayıt kaldırılmadı.")
 
     # Sepet analizleri için Description kalıcı değiştirilmez; geçici temiz alan kullanılır.
     basket_df = df.copy()
