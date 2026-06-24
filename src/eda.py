@@ -73,6 +73,39 @@ def _basket_products(values) -> list[str]:
     return sorted(products)
 
 
+def _description_quality_report(df: pd.DataFrame):
+    """Description kalitesini satır silmeden analiz eder ve inceleme raporlarını kaydeder."""
+    description_as_text = df["Description"].map(lambda value: "" if pd.isna(value) else str(value))
+    stripped_description = description_as_text.str.strip()
+
+    numeric_only_mask = stripped_description.str.match(r"^\d+$", na=False)
+    short_description_mask = stripped_description.str.len() < 2
+    blank_after_strip_mask = stripped_description == ""
+
+    description_quality = pd.DataFrame([
+        {
+            "total_description_count": len(df["Description"]),
+            "unique_description_count": len({
+                str(value) for value in df["Description"] if not pd.isna(value)
+            }),
+            "numeric_only_count": int(numeric_only_mask.sum()),
+            "short_description_count": int(short_description_mask.sum()),
+            "blank_after_strip_count": int(blank_after_strip_mask.sum()),
+        }
+    ])
+    description_quality.to_csv(f"{REPORTS_DIR}/eda_description_quality.csv", index=False)
+
+    df.loc[numeric_only_mask].to_csv(
+        f"{REPORTS_DIR}/numeric_only_descriptions.csv", index=False
+    )
+    df.loc[short_description_mask].to_csv(
+        f"{REPORTS_DIR}/short_descriptions.csv", index=False
+    )
+    df.loc[blank_after_strip_mask].to_csv(
+        f"{REPORTS_DIR}/blank_descriptions_after_strip.csv", index=False
+    )
+
+
 def _save_histogram(df: pd.DataFrame, column: str, path: str, title: str):
     """Sayısal değişken histogramını kaydeder."""
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -128,6 +161,8 @@ def run_eda():
         "sample_values": [_sample_values(df[col]) for col in df.columns],
     })
     column_profile.to_csv(f"{REPORTS_DIR}/eda_column_profile.csv", index=False)
+
+    _description_quality_report(df)
 
     # TotalPrice yalnızca EDA içindeki sayısal özet ve korelasyon için geçici analiz sütunudur.
     analysis_df = df.copy()
