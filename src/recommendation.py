@@ -117,14 +117,82 @@ def predict_segment_for_features(num_transactions: int,
     return segment
 
 
-def parse_consequents(val) -> list:
+def parse_itemset(val) -> list:
+    """Association rule itemset alanlarını listeye çevirir."""
     if isinstance(val, (set, frozenset)):
-        return list(val)
+        return [str(item).strip().upper() for item in val if str(item).strip()]
     val = str(val)
     val = val.replace("frozenset(", "").replace(")", "")
     val = val.replace("{", "").replace("}", "")
     val = val.replace("'", "").replace('"', "")
-    return [v.strip() for v in val.split(",") if v.strip()]
+    return [v.strip().upper() for v in val.split(",") if v.strip()]
+
+
+def parse_consequents(val) -> list:
+    """Geriye uyumluluk için consequents parse işlemini korur."""
+    return parse_itemset(val)
+
+
+def _load_customer_train_history(customer_id: int) -> list[str]:
+    """Mevcut müşterinin yalnızca TRAIN dönemindeki satın aldığı ürünleri okur."""
+    train_path = "data/processed/online_retail_train.csv"
+    train_df = pd.read_csv(train_path, usecols=["CustomerID", "Description"])
+    customer_products = train_df.loc[
+        train_df["CustomerID"].astype(str) == str(customer_id), "Description"
+    ]
+    return (
+        customer_products
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .str.upper()
+        .drop_duplicates()
+        .tolist()
+    )
+
+
+def _prepare_recommendation_scores(seg_rules: pd.DataFrame,
+                                   already_bought_upper: set[str]) -> pd.DataFrame:
+    """Kuralları müşteri geçmişiyle eşleştirip kişiselleştirilmiş skor üretir."""
+    seg_rules = seg_rules.copy()
+    seg_rules["antecedents_parsed"] = seg_rules["antecedents"].apply(parse_itemset)
+    seg_rules["product"] = seg_rules["consequents"].apply(
+        lambda x: parse_itemset(x)[0] if parse_itemset(x) else ""
+    )
+    seg_rules = seg_rules[seg_rules["product"] != ""]
+
+    seg_rules["history_match"] = seg_rules["antecedents_parsed"].apply(
+        lambda items: sum(1 for item in items if item in already_bought_upper)
+    )
+    seg_rules["history_match_ratio"] = seg_rules.apply(
+        lambda row: row["history_match"] / len(row["antecedents_parsed"])
+        if row["antecedents_parsed"] else 0.0,
+        axis=1,
+    )
+
+    if "hybrid_score" in seg_rules.columns:
+        base_score = seg_rules["hybrid_score"].fillna(0)
+    elif "lift" in seg_rules.columns:
+        lift = seg_rules["lift"].fillna(0)
+        lift_min = lift.min()
+        lift_max = lift.max()
+        base_score = (lift - lift_min) / (lift_max - lift_min) if lift_max > lift_min else 1.0
+    else:
+        base_score = 0.0
+
+    seg_rules["personalized_score"] = (
+        0.70 * base_score + 0.30 * seg_rules["history_match_ratio"]
+    )
+
+    if "rule_type" in seg_rules.columns:
+        seg_rules["rule_type_priority"] = seg_rules["rule_type"].map({
+            "Personalized": 0,
+            "General": 1,
+        }).fillna(2)
+    else:
+        seg_rules["rule_type_priority"] = 2
+
+    return seg_rules
 
 
 def recommend_products(customer_id: int = None,
@@ -134,9 +202,9 @@ def recommend_products(customer_id: int = None,
                        algo_name: str = None) -> pd.DataFrame:
     """
     Hibrit öneri:
-    - Segmentin birliktelik kurallarını hybrid_score'a göre sıralar
-    - already_bought listesindeki ürünleri dışlar
-    - General + Personalized kuralları dengeler
+    - Müşteri geçmişindeki antecedent eşleşmelerini önceliklendirir
+    - TRAIN döneminde satın alınan ürünleri tekrar önermez
+    - Segment kurallarını kişiselleştirilmiş skora göre sıralar
     """
     if segment_id is not None:
         segment = segment_id
@@ -162,39 +230,37 @@ def recommend_products(customer_id: int = None,
         print(f"  ⚠️  Segment {segment} için birliktelik kuralı bulunamadı.")
         return pd.DataFrame()
 
-    # Consequents'i parse et
-    seg_rules["product"] = seg_rules["consequents"].apply(
-        lambda x: parse_consequents(x)[0] if parse_consequents(x) else ""
-    )
-    seg_rules = seg_rules[seg_rules["product"] != ""]
+    if already_bought is None and customer_id is not None:
+        already_bought = _load_customer_train_history(customer_id)
 
-    # Satın alınanları çıkar
-    if already_bought:
-        bought_upper = [b.strip().upper() for b in already_bought]
+    already_bought_upper = {
+        str(product).strip().upper()
+        for product in (already_bought or [])
+        if str(product).strip()
+    }
+
+    seg_rules = _prepare_recommendation_scores(seg_rules, already_bought_upper)
+
+    # TRAIN döneminde satın alınan ürünleri tekrar önerme.
+    if already_bought_upper:
         seg_rules = seg_rules[
-            ~seg_rules["product"].str.upper().isin(bought_upper)
+            ~seg_rules["product"].str.upper().isin(already_bought_upper)
         ]
 
-    # Hybrid score'a göre sırala (yoksa lift'e göre)
-    sort_col = "hybrid_score" if "hybrid_score" in seg_rules.columns else "lift"
-    seg_rules = seg_rules.sort_values(sort_col, ascending=False)
+    if seg_rules.empty:
+        return pd.DataFrame()
+
+    # Önce geçmişle eşleşen kurallar, sonra Personalized, en son General fallback.
+    seg_rules["has_history_match"] = seg_rules["history_match"] > 0
+    seg_rules = seg_rules.sort_values(
+        ["has_history_match", "rule_type_priority", "personalized_score", "confidence", "lift"],
+        ascending=[False, True, False, False, False],
+    )
     seg_rules = seg_rules.drop_duplicates(subset="product")
 
-    # General ve Personalized dengeleme: ilk yarı General, ikinci yarı Personalized
-    if "rule_type" in seg_rules.columns:
-        general      = seg_rules[seg_rules["rule_type"] == "General"].head(top_n // 2 + 1)
-        personalized = seg_rules[seg_rules["rule_type"] == "Personalized"].head(top_n)
-        combined     = pd.concat([general, personalized]).drop_duplicates(
-            subset="product").head(top_n)
-        if len(combined) < top_n:
-            combined = seg_rules.head(top_n)
-        seg_rules = combined
-
+    optional_cols = ["hybrid_score", "personalized_score", "history_match", "rule_type"]
     cols = ["product", "confidence", "lift", "segment"]
-    if "hybrid_score" in seg_rules.columns:
-        cols.append("hybrid_score")
-    if "rule_type" in seg_rules.columns:
-        cols.append("rule_type")
+    cols.extend([col for col in optional_cols if col in seg_rules.columns])
 
     recommendations = seg_rules.head(top_n)[cols].reset_index(drop=True)
     recommendations.index += 1
