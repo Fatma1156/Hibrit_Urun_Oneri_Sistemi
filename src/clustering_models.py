@@ -22,15 +22,33 @@ FEATURES_FOR_CLUSTERING = [
     "Recency", "Frequency", "Monetary",
     "total_items", "avg_basket_size",
     "avg_unit_price", "unique_products", "unique_days",
+    "avg_basket_value", "purchase_span_days", "avg_days_between_orders",
 ]
 
 
+def _load_selected_features(features: pd.DataFrame) -> list[str]:
+    """Varsa korelasyon seçimi dosyasından model feature listesini okur."""
+    selected_features_path = "outputs/reports/selected_features.txt"
+    if os.path.exists(selected_features_path):
+        with open(selected_features_path, "r", encoding="utf-8") as file:
+            selected = [line.strip() for line in file if line.strip()]
+        cols = [col for col in selected if col in features.columns]
+        print(f"  Seçilmiş feature listesi okundu → {selected_features_path}")
+    else:
+        cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+        print("  selected_features.txt bulunamadı; varsayılan feature listesi kullanılacak.")
+
+    if not cols:
+        raise ValueError("Kümeleme için kullanılabilecek sayısal feature bulunamadı.")
+    return cols
+
+
 def scale_data(features: pd.DataFrame):
-    cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+    cols = _load_selected_features(features)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(features[cols])
     joblib.dump(scaler, "outputs/models/scaler.pkl")
-    print(f"  Ölçekleme yapıldı ({len(cols)} özellik)")
+    print(f"  Ölçekleme yapıldı ({len(cols)} özellik): {', '.join(cols)}")
     return X_scaled
 
 
@@ -48,7 +66,7 @@ def compute_metrics(X, labels: np.ndarray, name: str) -> dict:
         print(f"  {name:<12} → Yeterli küme yok (n_clusters={n_clusters})")
         return {"algorithm": name, "n_clusters": n_clusters,
                 "silhouette": -1, "davies_bouldin": 999,
-                "calinski_harabasz": 0}
+                "calinski_harabasz": 0, "noise_points": int((labels == -1).sum())}
 
     sil = silhouette_score(X_m, l_m)
     db  = davies_bouldin_score(X_m, l_m)
@@ -110,37 +128,40 @@ def find_best_k_elbow(X, K=range(2, 11)) -> int:
 
 
 # ──────────────────────────────────────────
-# SİLHOUETTE YÖNTEMİ
+# K-MEANS İÇİN ÇOK KRİTERLİ K SEÇİMİ
 # ──────────────────────────────────────────
 
-def find_best_k_silhouette(X, K=range(2, 11)) -> int:
-    """
-    Silhouette skorlarını hesaplar, grafiği kaydeder,
-    en yüksek skora sahip k'yı döndürür.
-    """
-    scores = []
+def select_best_k_kmeans(X, K=range(2, 11)) -> tuple[int, pd.DataFrame]:
+    """K-Means için k değerini üç metrik rank toplamına göre seçer."""
+    rows = []
     for k in K:
-        model  = KMeans(n_clusters=k, random_state=42, n_init=10)
+        model = KMeans(n_clusters=k, random_state=42, n_init=10)
         labels = model.fit_predict(X)
-        scores.append(silhouette_score(X, labels))
+        rows.append({
+            "k": k,
+            "wcss": model.inertia_,
+            "silhouette": silhouette_score(X, labels),
+            "davies_bouldin": davies_bouldin_score(X, labels),
+            "calinski_harabasz": calinski_harabasz_score(X, labels),
+        })
 
-    best_k = list(K)[np.argmax(scores)]
+    df_k = pd.DataFrame(rows)
+    df_k["rank_silhouette"] = df_k["silhouette"].rank(ascending=False, method="min")
+    df_k["rank_davies_bouldin"] = df_k["davies_bouldin"].rank(ascending=True, method="min")
+    df_k["rank_calinski_harabasz"] = df_k["calinski_harabasz"].rank(ascending=False, method="min")
+    df_k["total_rank"] = (
+        df_k["rank_silhouette"] +
+        df_k["rank_davies_bouldin"] +
+        df_k["rank_calinski_harabasz"]
+    )
+    df_k.to_csv("outputs/reports/kmeans_k_selection.csv", index=False)
 
-    fig, ax = plt.subplots(figsize=(8, 4))
-    ax.plot(K, scores, marker="o", color="steelblue")
-    ax.axvline(x=best_k, color="red", linestyle="--",
-               label=f"En iyi k={best_k}")
-    ax.set_title("Silhouette Analizi")
-    ax.set_xlabel("Küme Sayısı (k)")
-    ax.set_ylabel("Silhouette Skoru")
-    ax.legend()
-    plt.tight_layout()
-    plt.savefig("outputs/figures/silhouette.png")
-    plt.close()
-
-    print(f"  Silhouette → En iyi k: {best_k}  "
-          f"(Skor: {max(scores):.4f})")
-    return best_k, scores
+    best_row = df_k.sort_values(
+        ["total_rank", "rank_silhouette", "rank_davies_bouldin", "rank_calinski_harabasz"]
+    ).iloc[0]
+    best_k = int(best_row["k"])
+    print(f"  K-Means çok kriterli k seçimi → En iyi k: {best_k}")
+    return best_k, df_k
 
 
 # ──────────────────────────────────────────
@@ -164,6 +185,12 @@ def find_best_k_bic(X, K=range(2, 11)) -> int:
     best_k_bic = list(K)[np.argmin(bic_scores)]
     best_k_aic = list(K)[np.argmin(aic_scores)]
 
+    pd.DataFrame({
+        "k": list(K),
+        "bic": bic_scores,
+        "aic": aic_scores,
+    }).to_csv("outputs/reports/gmm_k_selection.csv", index=False)
+
     fig, ax = plt.subplots(figsize=(8, 4))
     ax.plot(K, bic_scores, marker="o", color="purple",  label="BIC")
     ax.plot(K, aic_scores, marker="s", color="orange",  label="AIC")
@@ -177,8 +204,8 @@ def find_best_k_bic(X, K=range(2, 11)) -> int:
     plt.savefig("outputs/figures/bic_aic.png")
     plt.close()
 
-    print(f"  BIC → En iyi k: {best_k_bic}  |  "
-          f"AIC → En iyi k: {best_k_aic}")
+    print(f"  GMM BIC → En iyi k: {best_k_bic}  |  "
+          f"AIC minimum k: {best_k_aic}")
     return best_k_bic, bic_scores, aic_scores
 
 
@@ -213,7 +240,14 @@ def plot_k_comparison(K, wcss, sil_scores, bic_scores, aic_scores):
 
 def plot_metrics(metrics_list: list):
     df_m = pd.DataFrame(metrics_list)
-    df_m.to_csv("outputs/reports/clustering_metrics.csv", index=False)
+    report_cols = [
+        "algorithm", "silhouette", "davies_bouldin",
+        "calinski_harabasz", "n_clusters", "noise_points", "topsis_score",
+    ]
+    for col in report_cols:
+        if col not in df_m.columns:
+            df_m[col] = 0
+    df_m[report_cols].to_csv("outputs/reports/clustering_metrics.csv", index=False)
 
     fig, axes = plt.subplots(1, 3, figsize=(14, 4))
     axes[0].bar(df_m["algorithm"], df_m["silhouette"],        color="steelblue")
@@ -232,6 +266,36 @@ def plot_metrics(metrics_list: list):
 # ──────────────────────────────────────────
 # ALGORİTMALAR
 # ──────────────────────────────────────────
+
+def select_best_algorithm_topsis(metrics_list: list) -> tuple[dict, pd.DataFrame]:
+    """Algoritmaları TOPSIS yöntemiyle sıralar ve en iyisini seçer."""
+    df_m = pd.DataFrame(metrics_list).copy()
+    criteria = ["silhouette", "davies_bouldin", "calinski_harabasz"]
+    matrix = df_m[criteria].astype(float).to_numpy()
+
+    # Vektör normalizasyonu ve eşit kriter ağırlıkları
+    denominator = np.sqrt((matrix ** 2).sum(axis=0))
+    denominator[denominator == 0] = 1
+    weights = np.array([1 / 3, 1 / 3, 1 / 3])
+    weighted = (matrix / denominator) * weights
+
+    # Fayda kriterleri: silhouette, calinski_harabasz; maliyet kriteri: davies_bouldin
+    ideal = np.array([weighted[:, 0].max(), weighted[:, 1].min(), weighted[:, 2].max()])
+    negative_ideal = np.array([weighted[:, 0].min(), weighted[:, 1].max(), weighted[:, 2].min()])
+
+    distance_to_ideal = np.sqrt(((weighted - ideal) ** 2).sum(axis=1))
+    distance_to_negative = np.sqrt(((weighted - negative_ideal) ** 2).sum(axis=1))
+    denominator_score = distance_to_ideal + distance_to_negative
+    denominator_score[denominator_score == 0] = 1
+    df_m["topsis_score"] = distance_to_negative / denominator_score
+
+    topsis_cols = ["algorithm", "silhouette", "davies_bouldin", "calinski_harabasz", "topsis_score"]
+    df_m[topsis_cols].to_csv("outputs/reports/topsis_results.csv", index=False)
+
+    best_row = df_m.sort_values("topsis_score", ascending=False).iloc[0]
+    print("  En iyi algoritma TOPSIS yöntemi ile seçildi.")
+    return best_row.to_dict(), df_m
+
 
 def run_kmeans(X, k):
     model  = KMeans(n_clusters=k, random_state=42, n_init=10)
@@ -267,28 +331,34 @@ def run_clustering(features: pd.DataFrame):
     K = range(2, 11)
 
     print("\n  K Seçim Yöntemleri çalıştırılıyor...")
-    best_k_elbow, wcss          = find_best_k_elbow(X, K)
-    best_k_sil,   sil_scores    = find_best_k_silhouette(X, K)
-    best_k_bic,   bic_scores, aic_scores = find_best_k_bic(X, K)
+    best_k_elbow, wcss = find_best_k_elbow(X, K)
+    best_k_kmeans, kmeans_k_df = select_best_k_kmeans(X, K)
+    best_k_gmm, bic_scores, aic_scores = find_best_k_bic(X, K)
 
-    plot_k_comparison(list(K), wcss, sil_scores, bic_scores, aic_scores)
+    # Elbow grafiği yalnızca görsel destek olarak korunur;
+    # K-Means k seçimi rank toplamıyla, GMM k seçimi BIC ile yapılır.
+    plot_k_comparison(
+        list(K),
+        wcss,
+        kmeans_k_df["silhouette"].tolist(),
+        bic_scores,
+        aic_scores,
+    )
 
-    # Çoğunluk oylamasıyla en iyi k'yı seç
-    votes   = [best_k_elbow, best_k_sil, best_k_bic]
-    best_k  = max(set(votes), key=votes.count)
-    print(f"\n  Elbow={best_k_elbow}, Silhouette={best_k_sil}, "
-          f"BIC={best_k_bic} → Seçilen k={best_k}")
+    print(f"\n  K-Means best_k={best_k_kmeans}  |  "
+          f"GMM best_k={best_k_gmm}  |  "
+          f"DBSCAN k kullanmaz (eps=0.8, min_samples=5)")
 
     print("\n  Algoritmalar çalıştırılıyor...")
-    labels_km,     metrics_km,     _ = run_kmeans(X, best_k)
+    labels_km,     metrics_km,     _ = run_kmeans(X, best_k_kmeans)
     labels_dbscan, metrics_dbscan, _ = run_dbscan(X)
-    labels_gmm,    metrics_gmm,    _ = run_gmm(X, best_k)
+    labels_gmm,    metrics_gmm,    _ = run_gmm(X, best_k_gmm)
 
     metrics_list = [metrics_km, metrics_dbscan, metrics_gmm]
-    plot_metrics(metrics_list)
 
-    # En iyi algoritma → Silhouette en yüksek
-    best      = max(metrics_list, key=lambda m: m["silhouette"])
+    # En iyi algoritma → TOPSIS skoru en yüksek olan algoritma
+    best, topsis_df = select_best_algorithm_topsis(metrics_list)
+    plot_metrics(topsis_df.to_dict("records"))
     best_name = best["algorithm"].lower().replace("-", "").replace(" ", "")
 
     label_map = {
@@ -296,12 +366,22 @@ def run_clustering(features: pd.DataFrame):
         "dbscan": labels_dbscan,
         "gmm":    labels_gmm,
     }
+    best_display_map = {
+        "kmeans": "KMeans",
+        "dbscan": "DBSCAN",
+        "gmm":    "GMM",
+    }
+    best_algorithm_name = best_display_map.get(best_name, "KMeans")
     best_labels = label_map.get(best_name, labels_km)
 
-    print(f"\n  ✅ En iyi algoritma: {best['algorithm']} "
+    with open("outputs/reports/best_clustering_model.txt", "w", encoding="utf-8") as file:
+        file.write(f"{best_algorithm_name}\n")
+
+    print(f"\n  ✅ En iyi algoritma: {best_algorithm_name} "
           f"(Silhouette: {best['silhouette']:.4f}  |  "
           f"DB: {best['davies_bouldin']:.4f}  |  "
           f"CH: {best['calinski_harabasz']:.1f})")
+    print("  En iyi algoritma kaydedildi → outputs/reports/best_clustering_model.txt")
 
     # Sonuçları kaydet
     results_df = pd.DataFrame({
@@ -310,7 +390,7 @@ def run_clustering(features: pd.DataFrame):
         "dbscan_label":   labels_dbscan,
         "gmm_label":      labels_gmm,
         "best_label":     best_labels,
-        "best_algorithm": best["algorithm"],
+        "best_algorithm": best_algorithm_name,
     })
     results_df.to_csv("outputs/reports/clustering_results.csv", index=False)
 

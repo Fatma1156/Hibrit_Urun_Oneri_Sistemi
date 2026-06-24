@@ -3,6 +3,23 @@ import numpy as np
 from src.recommendation import predict_segment_for_features
 
 
+def get_final_algorithm() -> tuple[str, str]:
+    """Final kümeleme algoritmasını okur; dosya yoksa KMeans kullanır."""
+    label_map = {
+        "kmeans": ("KMeans", "kmeans_label"),
+        "k-means": ("KMeans", "kmeans_label"),
+        "dbscan": ("DBSCAN", "dbscan_label"),
+        "gmm": ("GMM", "gmm_label"),
+    }
+    try:
+        with open("outputs/reports/best_clustering_model.txt", "r", encoding="utf-8") as file:
+            raw_name = file.read().strip()
+    except FileNotFoundError:
+        raw_name = "KMeans"
+
+    return label_map.get(raw_name.lower(), ("KMeans", "kmeans_label"))
+
+
 def precision_at_k(recommended: list, relevant: list, k: int) -> float:
     if not recommended or not relevant:
         return 0.0
@@ -140,7 +157,8 @@ def evaluate_algorithm(algo_name: str,
 
 
 def run_evaluation(k: int = 5, sample_size: int = 200):
-    print("\n  Precision@K ve Recall@K hesaplanıyor (her algoritma için)...")
+    algo_name, label_col = get_final_algorithm()
+    print(f"\n  Değerlendirme yalnızca final algoritma için yapılıyor: {algo_name}")
 
     train_df = pd.read_csv("data/processed/online_retail_train.csv")
     test_df  = pd.read_csv("data/processed/online_retail_test.csv")
@@ -158,37 +176,24 @@ def run_evaluation(k: int = 5, sample_size: int = 200):
     except FileNotFoundError:
         test_features = pd.DataFrame()
 
-    algorithms = [
-        ("KMeans", "kmeans_label"),
-        ("DBSCAN", "dbscan_label"),
-        ("GMM",    "gmm_label"),
-    ]
+    result = evaluate_algorithm(
+        algo_name, label_col,
+        train_df, test_df,
+        clustering_df, test_features, segments,
+        k=k, sample_size=sample_size
+    )
 
-    all_results = []
-
-    for algo_name, label_col in algorithms:
-        print(f"\n  [{algo_name}] değerlendiriliyor...")
-        result = evaluate_algorithm(
-            algo_name, label_col,
-            train_df, test_df,
-            clustering_df, test_features, segments,
-            k=k, sample_size=sample_size
-        )
-        if result:
-            all_results.append(result)
-
-    if not all_results:
-        print("  ⚠️  Hiçbir algoritma değerlendirilemedi.")
+    if not result:
+        print("  ⚠️  Final algoritma değerlendirilemedi.")
         return {}
 
-    # Karşılaştırma tablosu
-    summary_df = pd.DataFrame(all_results)
+    summary_df = pd.DataFrame([result])
     summary_df.to_csv("outputs/reports/evaluation_comparison.csv", index=False)
 
     p_col, r_col = f"Precision@{k}", f"Recall@{k}"
 
     print(f"\n  {'='*55}")
-    print(f"  DEĞERLENDİRME KARŞILAŞTIRMASI (K={k})")
+    print(f"  FINAL ALGORİTMA DEĞERLENDİRMESİ (K={k})")
     print(f"  {'='*55}")
     print(f"  {'Algoritma':<10} {'Precision@'+str(k):<16} "
           f"{'Recall@'+str(k):<16} {'Değerlendirilen'}")
@@ -197,11 +202,10 @@ def run_evaluation(k: int = 5, sample_size: int = 200):
         print(f"  {row['algorithm']:<10} {row[p_col]:<16.4f} "
               f"{row[r_col]:<16.4f} {int(row['n_evaluated'])}")
 
-    # En iyi algoritma
-    best = summary_df.loc[summary_df[p_col].idxmax()]
-    print(f"\n  ✅ En iyi algoritma: {best['algorithm']} "
-          f"(Precision@{k}={best[p_col]:.4f}, "
-          f"Recall@{k}={best[r_col]:.4f})")
+    final = summary_df.iloc[0]
+    print(f"\n  ✅ Final algoritma: {final['algorithm']} "
+          f"(Precision@{k}={final[p_col]:.4f}, "
+          f"Recall@{k}={final[r_col]:.4f})")
     print(f"  {'='*55}\n")
 
     print("  Değerlendirme tamamlandı.")
