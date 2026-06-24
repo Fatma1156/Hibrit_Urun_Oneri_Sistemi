@@ -1,5 +1,6 @@
+import os
+
 import pandas as pd
-import numpy as np
 from mlxtend.frequent_patterns import apriori, association_rules
 
 
@@ -159,14 +160,22 @@ def tag_rule_type(rules: pd.DataFrame) -> pd.DataFrame:
 def mine_rules(basket: pd.DataFrame,
                df_segment: pd.DataFrame,
                min_support: float = 0.02,
-               min_lift: float = 1.2,       # Anlamlılık filtresi
+               min_lift: float = 1.0,       # Lift > 1 pozitif ilişkiyi gösterir
                min_confidence: float = 0.5,
-               apply_time_filter: bool = True) -> pd.DataFrame:
+               apply_time_filter: bool = False,
+               min_item_support: float = 0.01,
+               min_item_count: int = 2) -> tuple[pd.DataFrame, dict]:
 
-    MAX_COLS = 500
-    if basket.shape[1] > MAX_COLS:
-        top_cols = basket.sum().nlargest(MAX_COLS).index
-        basket   = basket[top_cols]
+    n_products_before = basket.shape[1]
+    item_support = basket.mean(axis=0)
+    item_count = basket.sum(axis=0)
+    valid_items = item_support[
+        (item_support >= min_item_support) & (item_count >= min_item_count)
+    ].index
+    basket = basket[valid_items]
+    n_products_after = basket.shape[1]
+
+    print(f"      Ürün frekans filtresi: {n_products_before} üründen {n_products_after} ürün kaldı")
 
     n_invoices = basket.shape[0]
     if n_invoices < 500:
@@ -174,14 +183,28 @@ def mine_rules(basket: pd.DataFrame,
     elif n_invoices < 2000:
         min_support = max(min_support, 0.03)
 
+    summary = {
+        "n_invoices": n_invoices,
+        "n_products_before_filter": n_products_before,
+        "n_products_after_filter": n_products_after,
+        "min_item_support": min_item_support,
+        "min_item_count": min_item_count,
+        "min_support_used": min_support,
+        "n_rules": 0,
+    }
+
+    if basket.empty or basket.shape[1] < 2:
+        return pd.DataFrame(), summary
+
     try:
         frequent = apriori(basket, min_support=min_support, use_colnames=True)
     except MemoryError:
         print("      ⚠️  Bellek yetersiz, min_support=0.10 ile tekrar deneniyor...")
+        summary["min_support_used"] = 0.10
         frequent = apriori(basket, min_support=0.10, use_colnames=True)
 
     if frequent.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     rules = association_rules(
         frequent, metric="lift", min_threshold=min_lift,
@@ -201,22 +224,16 @@ def mine_rules(basket: pd.DataFrame,
         rules = rules[rules["conviction"] > 1.0]
 
     if rules.empty:
-        return pd.DataFrame()
-
-    # Zaman serisi filtresi
-    if apply_time_filter and not df_segment.empty:
-        rules = filter_recent_pairs(df_segment, rules, months=6)
-
-    if rules.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     # Hibrit puanlama
     rules = compute_hybrid_score(rules)
 
     # hybrid_score'a göre sırala
     rules = rules.sort_values("hybrid_score", ascending=False)
+    summary["n_rules"] = len(rules)
 
-    return rules
+    return rules, summary
 
 
 # ──────────────────────────────────────────
@@ -236,6 +253,12 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
     df = df[df["segment"] != -1]
 
     all_rules = []
+    segment_summary_rows = []
+    segment_summary_columns = [
+        "algorithm", "segment", "n_transactions", "n_invoices",
+        "n_products_before_filter", "n_products_after_filter",
+        "min_item_support", "min_item_count", "min_support_used", "n_rules",
+    ]
     print(f"\n  [{algo_name}] Birliktelik Analizi:")
 
     for seg_id in sorted(df["segment"].unique()):
@@ -247,9 +270,27 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
 
         if basket.empty or basket.shape[1] < 2:
             print(f"      Segment {seg_id} atlandı: birliktelik analizi için yeterli ürün yok.")
+            segment_summary_rows.append({
+                "algorithm": algo_name,
+                "segment": seg_id,
+                "n_transactions": len(seg_df),
+                "n_invoices": basket.shape[0],
+                "n_products_before_filter": basket.shape[1],
+                "n_products_after_filter": basket.shape[1],
+                "min_item_support": 0.01,
+                "min_item_count": 2,
+                "min_support_used": 0,
+                "n_rules": 0,
+            })
             continue
 
-        rules = mine_rules(basket, seg_df)
+        rules, segment_summary = mine_rules(basket, seg_df)
+        segment_summary_rows.append({
+            "algorithm": algo_name,
+            "segment": seg_id,
+            "n_transactions": len(seg_df),
+            **segment_summary,
+        })
 
         if rules.empty:
             print(f"      ⚠️  Kural bulunamadı.")
@@ -258,13 +299,12 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
         rules["segment"]   = seg_id
         rules["algorithm"] = algo_name
 
-        # Küme baskınlık etiketi (segment bazlı)
-        rules = tag_rule_type(rules)
-
         all_rules.append(rules)
-        print(f"      ✅ {len(rules)} kural  "
-              f"(General: {(rules.get('rule_type','') == 'General').sum()}, "
-              f"Personalized: {(rules.get('rule_type','') == 'Personalized').sum()})")
+        print(f"      ✅ {len(rules)} kural")
+
+    pd.DataFrame(segment_summary_rows, columns=segment_summary_columns).to_csv(
+        "outputs/reports/association_segment_summary.csv", index=False
+    )
 
     if all_rules:
         combined = pd.concat(all_rules, ignore_index=True)
@@ -284,6 +324,8 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
 # ──────────────────────────────────────────
 
 def run_association_rules():
+    os.makedirs("outputs/reports", exist_ok=True)
+
     df_train = pd.read_csv("data/processed/online_retail_train.csv")
     label_col, algo_name = get_best_clustering_algorithm()
 
