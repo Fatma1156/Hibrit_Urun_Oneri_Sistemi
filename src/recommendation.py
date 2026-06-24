@@ -11,33 +11,38 @@ def get_customer_segment(customer_id: int) -> int:
     return int(segments["segment"].value_counts().idxmax())
 
 
+def _load_selected_features() -> list[str]:
+    """Eğitimde kullanılan seçilmiş feature sırasını dosyadan okur."""
+    with open("outputs/reports/selected_features.txt", "r", encoding="utf-8") as file:
+        return [line.strip() for line in file if line.strip()]
+
+
 def predict_segment_for_features(num_transactions: int,
                                   total_items: int,
                                   total_spent: float) -> int:
+    """Yeni müşteriyi eğitimdeki scaler + K-Means pipeline'ı ile segmentler."""
+    selected_features = _load_selected_features()
     scaler = joblib.load("outputs/models/scaler.pkl")
-    best   = joblib.load("outputs/models/best_clustering.pkl")
-    algo   = best["algorithm"]
+    kmeans = joblib.load("outputs/models/kmeans.pkl")
 
-    feature_names = scaler.feature_names_in_
     row = pd.DataFrame(
-        data=np.zeros((1, len(feature_names))),
-        columns=feature_names
+        data=np.zeros((1, len(selected_features))),
+        columns=selected_features
     )
-    if "Frequency"   in row.columns: row["Frequency"]   = num_transactions
-    if "total_items" in row.columns: row["total_items"] = total_items
-    if "Monetary"    in row.columns: row["Monetary"]    = total_spent
+    if "Frequency" in row.columns:
+        row["Frequency"] = num_transactions
+    if "total_items" in row.columns:
+        row["total_items"] = total_items
+    if "Monetary" in row.columns:
+        row["Monetary"] = total_spent
 
-    X = scaler.transform(row)
+    print("  Yeni müşteri feature değerleri:")
+    print(row.to_string(index=False))
 
-    if algo == "kmeans":
-        model = joblib.load("outputs/models/kmeans.pkl")
-        return int(model.predict(X)[0])
-    elif algo == "gmm":
-        model = joblib.load("outputs/models/gmm.pkl")
-        return int(model.predict(X)[0])
-    else:
-        segments = pd.read_csv("data/processed/customer_segments.csv")
-        return int(segments["segment"].value_counts().idxmax())
+    X = scaler.transform(row[selected_features])
+    segment = int(kmeans.predict(X)[0])
+    print(f"  Tahmin edilen segment: {segment}")
+    return segment
 
 
 def parse_consequents(val) -> list:
