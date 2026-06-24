@@ -22,15 +22,33 @@ FEATURES_FOR_CLUSTERING = [
     "Recency", "Frequency", "Monetary",
     "total_items", "avg_basket_size",
     "avg_unit_price", "unique_products", "unique_days",
+    "avg_basket_value", "purchase_span_days", "avg_days_between_orders",
 ]
 
 
+def _load_selected_features(features: pd.DataFrame) -> list[str]:
+    """Varsa korelasyon seçimi dosyasından model feature listesini okur."""
+    selected_features_path = "outputs/reports/selected_features.txt"
+    if os.path.exists(selected_features_path):
+        with open(selected_features_path, "r", encoding="utf-8") as file:
+            selected = [line.strip() for line in file if line.strip()]
+        cols = [col for col in selected if col in features.columns]
+        print(f"  Seçilmiş feature listesi okundu → {selected_features_path}")
+    else:
+        cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+        print("  selected_features.txt bulunamadı; varsayılan feature listesi kullanılacak.")
+
+    if not cols:
+        raise ValueError("Kümeleme için kullanılabilecek sayısal feature bulunamadı.")
+    return cols
+
+
 def scale_data(features: pd.DataFrame):
-    cols = [c for c in FEATURES_FOR_CLUSTERING if c in features.columns]
+    cols = _load_selected_features(features)
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(features[cols])
     joblib.dump(scaler, "outputs/models/scaler.pkl")
-    print(f"  Ölçekleme yapıldı ({len(cols)} özellik)")
+    print(f"  Ölçekleme yapıldı ({len(cols)} özellik): {', '.join(cols)}")
     return X_scaled
 
 
