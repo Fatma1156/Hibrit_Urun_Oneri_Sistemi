@@ -274,11 +274,15 @@ def _print_recs(recs: pd.DataFrame):
         for i, row in recs.iterrows():
             score = f"  hybrid={row['hybrid_score']:.3f}" \
                 if "hybrid_score" in row else ""
+            personal = f"  personal={row['personalized_score']:.3f}" \
+                if "personalized_score" in row else ""
+            match = f"  match={int(row['history_match'])}" \
+                if "history_match" in row else ""
             rtype = f"  [{row['rule_type']}]" \
                 if "rule_type" in row else ""
             print(f"    {i}. {str(row['product']):<45} "
                   f"lift={row['lift']:.2f}  conf={row['confidence']:.2f}"
-                  f"{score}{rtype}")
+                  f"{score}{personal}{match}{rtype}")
 
 
 def run_recommendation_demo():
