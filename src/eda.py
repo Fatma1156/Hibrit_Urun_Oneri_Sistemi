@@ -106,6 +106,45 @@ def _description_quality_report(df: pd.DataFrame):
     )
 
 
+def _special_stockcodes_report(df: pd.DataFrame):
+    """Gerçek ürün olmayabilecek özel StockCode kayıtlarını satır silmeden raporlar."""
+    known_special_codes = {
+        "M",
+        "POST",
+        "DOT",
+        "CRUK",
+        "C2",
+        "BANK CHARGES",
+        "D",
+        "AMAZONFEE",
+        "S",
+    }
+
+    stockcode_clean = df["StockCode"].map(
+        lambda value: "" if pd.isna(value) else str(value).strip().upper()
+    )
+    normal_product_mask = stockcode_clean.str.match(r"^\d{5}[A-Z]?$", na=False)
+    letters_only_mask = stockcode_clean.str.match(r"^[A-Z]+$", na=False)
+    known_special_mask = stockcode_clean.isin(known_special_codes)
+    special_stockcode_mask = known_special_mask | letters_only_mask | ~normal_product_mask
+
+    special_examples = df.loc[special_stockcode_mask].copy()
+    special_examples.to_csv(
+        f"{REPORTS_DIR}/special_stockcodes_examples.csv", index=False
+    )
+
+    report_source = special_examples.copy()
+    report_source["StockCode"] = stockcode_clean.loc[special_stockcode_mask].values
+    report = (
+        report_source
+        .groupby(["StockCode", "Description"], dropna=False)
+        .size()
+        .reset_index(name="count")
+        .sort_values(["count", "StockCode", "Description"], ascending=[False, True, True])
+    )
+    report.to_csv(f"{REPORTS_DIR}/special_stockcodes_report.csv", index=False)
+
+
 def _save_histogram(df: pd.DataFrame, column: str, path: str, title: str):
     """Sayısal değişken histogramını kaydeder."""
     fig, ax = plt.subplots(figsize=(9, 5))
@@ -163,6 +202,7 @@ def run_eda():
     column_profile.to_csv(f"{REPORTS_DIR}/eda_column_profile.csv", index=False)
 
     _description_quality_report(df)
+    _special_stockcodes_report(df)
 
     # TotalPrice yalnızca EDA içindeki sayısal özet ve korelasyon için geçici analiz sütunudur.
     analysis_df = df.copy()
