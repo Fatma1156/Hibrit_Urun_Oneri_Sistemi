@@ -115,7 +115,7 @@ def _build_features(df: pd.DataFrame, snapshot_date: pd.Timestamp) -> pd.DataFra
     return features
 
 
-def _select_features_by_correlation(features: pd.DataFrame, correlation_threshold: float = 0.90) -> list[str]:
+def _select_features_by_correlation(features: pd.DataFrame, correlation_threshold: float = 0.80) -> list[str]:
     """Model aday feature listesini korelasyon önceliğine göre daraltır."""
     candidate_features = [c for c in MODEL_FEATURE_CANDIDATES if c in features.columns]
     corr = features[candidate_features].corr(numeric_only=True)
@@ -192,7 +192,7 @@ def create_customer_features():
     train_features = _build_features(train_df, snapshot)
     test_features = _build_features(test_df, snapshot)
 
-    selected_features = _select_features_by_correlation(train_features, correlation_threshold=0.90)
+    selected_features = _select_features_by_correlation(train_features, correlation_threshold=0.80)
 
     train_features.to_csv("data/processed/customer_features.csv")
     train_features.to_csv("data/processed/customer_features_train.csv")

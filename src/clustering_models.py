@@ -242,7 +242,7 @@ def plot_metrics(metrics_list: list):
     df_m = pd.DataFrame(metrics_list)
     report_cols = [
         "algorithm", "silhouette", "davies_bouldin",
-        "calinski_harabasz", "n_clusters", "noise_points",
+        "calinski_harabasz", "n_clusters", "noise_points", "topsis_score",
     ]
     for col in report_cols:
         if col not in df_m.columns:
@@ -267,23 +267,34 @@ def plot_metrics(metrics_list: list):
 # ALGORİTMALAR
 # ──────────────────────────────────────────
 
-def select_best_algorithm(metrics_list: list) -> dict:
-    """Algoritmaları üç metrik rank toplamına göre sıralar ve en iyisini seçer."""
+def select_best_algorithm_topsis(metrics_list: list) -> tuple[dict, pd.DataFrame]:
+    """Algoritmaları TOPSIS yöntemiyle sıralar ve en iyisini seçer."""
     df_m = pd.DataFrame(metrics_list).copy()
-    df_m["rank_silhouette"] = df_m["silhouette"].rank(ascending=False, method="min")
-    df_m["rank_davies_bouldin"] = df_m["davies_bouldin"].rank(ascending=True, method="min")
-    df_m["rank_calinski_harabasz"] = df_m["calinski_harabasz"].rank(ascending=False, method="min")
-    df_m["total_rank"] = (
-        df_m["rank_silhouette"] +
-        df_m["rank_davies_bouldin"] +
-        df_m["rank_calinski_harabasz"]
-    )
+    criteria = ["silhouette", "davies_bouldin", "calinski_harabasz"]
+    matrix = df_m[criteria].astype(float).to_numpy()
 
-    best_row = df_m.sort_values(
-        ["total_rank", "rank_silhouette", "rank_davies_bouldin", "rank_calinski_harabasz"]
-    ).iloc[0]
-    print("  En iyi algoritma çok kriterli değerlendirme ile seçildi.")
-    return best_row.to_dict()
+    # Vektör normalizasyonu ve eşit kriter ağırlıkları
+    denominator = np.sqrt((matrix ** 2).sum(axis=0))
+    denominator[denominator == 0] = 1
+    weights = np.array([1 / 3, 1 / 3, 1 / 3])
+    weighted = (matrix / denominator) * weights
+
+    # Fayda kriterleri: silhouette, calinski_harabasz; maliyet kriteri: davies_bouldin
+    ideal = np.array([weighted[:, 0].max(), weighted[:, 1].min(), weighted[:, 2].max()])
+    negative_ideal = np.array([weighted[:, 0].min(), weighted[:, 1].max(), weighted[:, 2].min()])
+
+    distance_to_ideal = np.sqrt(((weighted - ideal) ** 2).sum(axis=1))
+    distance_to_negative = np.sqrt(((weighted - negative_ideal) ** 2).sum(axis=1))
+    denominator_score = distance_to_ideal + distance_to_negative
+    denominator_score[denominator_score == 0] = 1
+    df_m["topsis_score"] = distance_to_negative / denominator_score
+
+    topsis_cols = ["algorithm", "silhouette", "davies_bouldin", "calinski_harabasz", "topsis_score"]
+    df_m[topsis_cols].to_csv("outputs/reports/topsis_results.csv", index=False)
+
+    best_row = df_m.sort_values("topsis_score", ascending=False).iloc[0]
+    print("  En iyi algoritma TOPSIS yöntemi ile seçildi.")
+    return best_row.to_dict(), df_m
 
 
 def run_kmeans(X, k):
@@ -344,10 +355,10 @@ def run_clustering(features: pd.DataFrame):
     labels_gmm,    metrics_gmm,    _ = run_gmm(X, best_k_gmm)
 
     metrics_list = [metrics_km, metrics_dbscan, metrics_gmm]
-    plot_metrics(metrics_list)
 
-    # En iyi algoritma → üç metrik rank toplamı en düşük olan algoritma
-    best      = select_best_algorithm(metrics_list)
+    # En iyi algoritma → TOPSIS skoru en yüksek olan algoritma
+    best, topsis_df = select_best_algorithm_topsis(metrics_list)
+    plot_metrics(topsis_df.to_dict("records"))
     best_name = best["algorithm"].lower().replace("-", "").replace(" ", "")
 
     label_map = {
