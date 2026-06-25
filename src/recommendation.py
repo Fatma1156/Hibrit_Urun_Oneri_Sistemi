@@ -5,11 +5,37 @@ import joblib
 _PREDICTION_PRINT_LIMIT = 10
 _prediction_print_count = 0
 _prediction_limit_message_printed = False
+_TRAIN_HISTORY_CACHE = None
+_RULES_CACHE = {}
+_SEGMENTS_CACHE = None
+
+
+def _get_segments() -> pd.DataFrame:
+    """Müşteri segmentlerini tek kez okuyup cache'te tutar."""
+    global _SEGMENTS_CACHE
+    if _SEGMENTS_CACHE is None:
+        _SEGMENTS_CACHE = pd.read_csv(
+            "data/processed/customer_segments.csv",
+            index_col="CustomerID",
+        )
+    return _SEGMENTS_CACHE
+
+
+def _load_rules(path: str) -> pd.DataFrame:
+    """Association rules dosyalarını dosya yolu bazlı cache'ler."""
+    if path not in _RULES_CACHE:
+        try:
+            _RULES_CACHE[path] = pd.read_csv(path)
+        except FileNotFoundError:
+            fallback_path = "outputs/reports/association_rules.csv"
+            if fallback_path not in _RULES_CACHE:
+                _RULES_CACHE[fallback_path] = pd.read_csv(fallback_path)
+            _RULES_CACHE[path] = _RULES_CACHE[fallback_path]
+    return _RULES_CACHE[path]
 
 
 def get_customer_segment(customer_id: int) -> int:
-    segments = pd.read_csv("data/processed/customer_segments.csv",
-                           index_col="CustomerID")
+    segments = _get_segments()
     if customer_id in segments.index:
         return int(segments.loc[customer_id, "segment"])
     return int(segments["segment"].value_counts().idxmax())
@@ -135,20 +161,28 @@ def parse_consequents(val) -> list:
 
 def _load_customer_train_history(customer_id: int) -> list[str]:
     """Mevcut müşterinin yalnızca TRAIN dönemindeki satın aldığı ürünleri okur."""
-    train_path = "data/processed/online_retail_train.csv"
-    train_df = pd.read_csv(train_path, usecols=["CustomerID", "Description"])
-    customer_products = train_df.loc[
-        train_df["CustomerID"].astype(str) == str(customer_id), "Description"
-    ]
-    return (
-        customer_products
-        .dropna()
-        .astype(str)
-        .str.strip()
-        .str.upper()
-        .drop_duplicates()
-        .tolist()
-    )
+    global _TRAIN_HISTORY_CACHE
+    if _TRAIN_HISTORY_CACHE is None:
+        train_df = pd.read_csv(
+            "data/processed/online_retail_train.csv",
+            usecols=["CustomerID", "Description"],
+        )
+        train_df["CustomerID"] = train_df["CustomerID"].astype(str)
+        train_df["Description"] = (
+            train_df["Description"]
+            .dropna()
+            .astype(str)
+            .str.strip()
+            .str.upper()
+        )
+        train_df = train_df.dropna(subset=["Description"])
+        _TRAIN_HISTORY_CACHE = (
+            train_df
+            .groupby("CustomerID")["Description"]
+            .apply(lambda values: list(dict.fromkeys(values)))
+            .to_dict()
+        )
+    return list(_TRAIN_HISTORY_CACHE.get(str(customer_id), []))
 
 
 def _prepare_recommendation_scores(seg_rules: pd.DataFrame,
@@ -199,7 +233,8 @@ def recommend_products(customer_id: int = None,
                        segment_id: int = None,
                        top_n: int = 5,
                        already_bought: list = None,
-                       algo_name: str = None) -> pd.DataFrame:
+                       algo_name: str = None,
+                       verbose: bool = True) -> pd.DataFrame:
     """
     Hibrit öneri:
     - Müşteri geçmişindeki antecedent eşleşmelerini önceliklendirir
@@ -219,15 +254,13 @@ def recommend_products(customer_id: int = None,
     else:
         path = "outputs/reports/association_rules.csv"
 
-    try:
-        rules = pd.read_csv(path)
-    except FileNotFoundError:
-        rules = pd.read_csv("outputs/reports/association_rules.csv")
+    rules = _load_rules(path)
 
     seg_rules = rules[rules["segment"] == segment].copy()
 
     if seg_rules.empty:
-        print(f"  ⚠️  Segment {segment} için birliktelik kuralı bulunamadı.")
+        if verbose:
+            print(f"  ⚠️  Segment {segment} için birliktelik kuralı bulunamadı.")
         return pd.DataFrame()
 
     if already_bought is None and customer_id is not None:
@@ -289,8 +322,7 @@ def run_recommendation_demo():
     print("\n  ===== ÖRNEK ÖNERİLER =====")
 
     print("\n  [A] Mevcut Müşteriler")
-    segments = pd.read_csv("data/processed/customer_segments.csv",
-                            index_col="CustomerID")
+    segments = _get_segments()
     sample_ids = segments.index[:3].tolist()
 
     for cid in sample_ids:

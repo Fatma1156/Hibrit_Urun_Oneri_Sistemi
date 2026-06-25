@@ -74,7 +74,7 @@ def evaluate_algorithm(algo_name: str,
         if not bought_test:
             continue
 
-        recs = recommend_products(customer_id=cid, top_n=k)
+        recs = recommend_products(customer_id=cid, top_n=k, verbose=False)
         recommended = []
         if not recs.empty and "product" in recs.columns:
             recommended = (
