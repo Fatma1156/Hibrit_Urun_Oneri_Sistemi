@@ -1,6 +1,23 @@
 import pandas as pd
-import numpy as np
-from src.recommendation import predict_segment_for_features
+
+from src.recommendation import recommend_products
+
+
+def get_final_algorithm() -> tuple[str, str]:
+    """Final kümeleme algoritmasını okur; dosya yoksa KMeans kullanır."""
+    label_map = {
+        "kmeans": ("KMeans", "kmeans_label"),
+        "k-means": ("KMeans", "kmeans_label"),
+        "dbscan": ("DBSCAN", "dbscan_label"),
+        "gmm": ("GMM", "gmm_label"),
+    }
+    try:
+        with open("outputs/reports/best_clustering_model.txt", "r", encoding="utf-8") as file:
+            raw_name = file.read().strip()
+    except FileNotFoundError:
+        raw_name = "KMeans"
+
+    return label_map.get(raw_name.lower(), ("KMeans", "kmeans_label"))
 
 
 def precision_at_k(recommended: list, relevant: list, k: int) -> float:
@@ -15,37 +32,15 @@ def recall_at_k(recommended: list, relevant: list, k: int) -> float:
     return len(set(recommended[:k]) & set(relevant)) / len(relevant)
 
 
-def parse_consequents(val) -> list:
-    if isinstance(val, (set, frozenset)):
-        return list(val)
-    val = str(val)
-    val = val.replace("frozenset(", "").replace(")", "")
-    val = val.replace("{", "").replace("}", "")
-    val = val.replace("'", "").replace('"', "")
-    return [v.strip() for v in val.split(",") if v.strip()]
-
-
-def get_segment_for_customer(cid, label_col, clustering_df,
-                              test_features, segments):
-    """Müşterinin belirli algoritmaya göre segment ID'sini döndürür."""
+def get_segment_for_customer(cid, label_col, clustering_df):
+    """Train döneminde segmenti bilinen müşterinin segment ID'sini döndürür."""
     row = clustering_df[clustering_df["CustomerID"] == cid]
-    if not row.empty:
-        seg = row.iloc[0][label_col]
-        if seg != -1:
-            return int(seg)
-
-    # Clustering'de yoksa özelliklerden tahmin et
-    if not test_features.empty and cid in test_features.index:
-        r = test_features.loc[cid]
-        return predict_segment_for_features(
-            num_transactions=int(r.get("Frequency", 1)),
-            total_items=int(r.get("total_items", 1)),
-            total_spent=float(r.get("Monetary", 0.0))
-        )
-
-    # Fallback: en kalabalık segment
-    valid = clustering_df[clustering_df[label_col] != -1]
-    return int(valid[label_col].value_counts().idxmax())
+    if row.empty:
+        return None
+    seg = row.iloc[0][label_col]
+    if seg == -1:
+        return None
+    return int(seg)
 
 
 def evaluate_algorithm(algo_name: str,
@@ -53,44 +48,24 @@ def evaluate_algorithm(algo_name: str,
                         train_df: pd.DataFrame,
                         test_df: pd.DataFrame,
                         clustering_df: pd.DataFrame,
-                        test_features: pd.DataFrame,
-                        segments: pd.DataFrame,
-                        k: int = 5,
-                        sample_size: int = 200,
-                        random_state: int = 42) -> dict:
+                        k: int = 5) -> dict:
     """
     Tek bir algoritma için Precision@K ve Recall@K hesaplar.
+    Öneriler doğrudan recommendation.py içindeki gerçek öneri fonksiyonundan alınır.
     """
-    # O algoritmaya ait birliktelik kurallarını yükle
-    rules_path = f"outputs/reports/association_rules_{algo_name.lower()}.csv"
-    try:
-        rules_df = pd.read_csv(rules_path)
-    except FileNotFoundError:
-        print(f"    ⚠️  {rules_path} bulunamadı, atlanıyor.")
-        return {}
-
-    rules_df["consequents_parsed"] = rules_df["consequents"].apply(
-        lambda x: parse_consequents(x)[0] if parse_consequents(x) else ""
-    )
-
-    test_customers = test_df["CustomerID"].unique().tolist()
-    if len(test_customers) > sample_size:
-        rng = np.random.default_rng(random_state)
-        test_customers = rng.choice(
-            test_customers, size=sample_size, replace=False
-        ).tolist()
+    all_test_customers = test_df["CustomerID"].unique().tolist()
+    train_customers = set(train_df["CustomerID"].unique().tolist())
+    test_customers = [cid for cid in all_test_customers if cid in train_customers]
+    print(f"  Toplam test müşteri sayısı: {len(all_test_customers):,}")
+    print(f"  Train geçmişi olan uygun test müşteri sayısı: {len(test_customers):,}")
 
     results = []
 
     for cid in test_customers:
-        seg = get_segment_for_customer(
-            cid, label_col, clustering_df, test_features, segments
-        )
+        seg = get_segment_for_customer(cid, label_col, clustering_df)
+        if seg is None:
+            continue
 
-        bought_train = (
-            train_df[train_df["CustomerID"] == cid]["Description"]
-            .dropna().str.strip().str.upper().unique().tolist()
-        )
         bought_test = (
             test_df[test_df["CustomerID"] == cid]["Description"]
             .dropna().str.strip().str.upper().unique().tolist()
@@ -99,17 +74,17 @@ def evaluate_algorithm(algo_name: str,
         if not bought_test:
             continue
 
-        seg_rules = rules_df[rules_df["segment"] == seg].copy()
-        seg_rules = seg_rules[
-            ~seg_rules["consequents_parsed"].str.upper().isin(bought_train)
-        ]
-        seg_rules = seg_rules.sort_values("lift", ascending=False)
-        seg_rules = seg_rules.drop_duplicates(subset="consequents_parsed")
-
-        recommended = [
-            r.strip().upper()
-            for r in seg_rules["consequents_parsed"].head(k).tolist()
-        ]
+        recs = recommend_products(customer_id=cid, top_n=k, verbose=False)
+        recommended = []
+        if not recs.empty and "product" in recs.columns:
+            recommended = (
+                recs["product"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .tolist()
+            )
 
         results.append({
             "CustomerID":      cid,
@@ -121,6 +96,11 @@ def evaluate_algorithm(algo_name: str,
         })
 
     if not results:
+        print("  Değerlendirilen müşteri sayısı: 0")
+        pd.DataFrame(columns=[
+            "CustomerID", "segment", f"Precision@{k}", f"Recall@{k}",
+            "n_recommended", "n_relevant",
+        ]).to_csv(f"outputs/reports/evaluation_{algo_name.lower()}.csv", index=False)
         return {"algorithm": algo_name, f"Precision@{k}": 0,
                 f"Recall@{k}": 0, "n_evaluated": 0}
 
@@ -130,65 +110,50 @@ def evaluate_algorithm(algo_name: str,
     )
 
     p_col, r_col = f"Precision@{k}", f"Recall@{k}"
+    print(f"  Değerlendirilen müşteri sayısı: {len(df_res):,}")
+
+    precision = round(df_res[p_col].mean(), 4)
+    recall = round(df_res[r_col].mean(), 4)
+    print(f"  Precision@{k}: {precision:.4f}")
+    print(f"  Recall@{k}: {recall:.4f}")
+    print("  Precision@K ve Recall@K tüm test müşterileri üzerinden hesaplanmıştır.")
+
     return {
         "algorithm":           algo_name,
-        f"Precision@{k}":      round(df_res[p_col].mean(), 4),
-        f"Recall@{k}":         round(df_res[r_col].mean(), 4),
+        f"Precision@{k}":      precision,
+        f"Recall@{k}":         recall,
         "n_evaluated":         len(df_res),
         "n_with_recs":         int((df_res["n_recommended"] > 0).sum()),
     }
 
 
-def run_evaluation(k: int = 5, sample_size: int = 200):
-    print("\n  Precision@K ve Recall@K hesaplanıyor (her algoritma için)...")
+def run_evaluation(k: int = 5):
+    algo_name, label_col = get_final_algorithm()
+    print(f"\n  Değerlendirme yalnızca final algoritma için yapılıyor: {algo_name}")
 
     train_df = pd.read_csv("data/processed/online_retail_train.csv")
     test_df  = pd.read_csv("data/processed/online_retail_test.csv")
 
     clustering_df = pd.read_csv("outputs/reports/clustering_results.csv")
 
-    segments = pd.read_csv("data/processed/customer_segments.csv",
-                            index_col="CustomerID")
+    result = evaluate_algorithm(
+        algo_name, label_col,
+        train_df, test_df,
+        clustering_df,
+        k=k
+    )
 
-    try:
-        test_features = pd.read_csv(
-            "data/processed/customer_features_test.csv",
-            index_col="CustomerID"
-        )
-    except FileNotFoundError:
-        test_features = pd.DataFrame()
-
-    algorithms = [
-        ("KMeans", "kmeans_label"),
-        ("DBSCAN", "dbscan_label"),
-        ("GMM",    "gmm_label"),
-    ]
-
-    all_results = []
-
-    for algo_name, label_col in algorithms:
-        print(f"\n  [{algo_name}] değerlendiriliyor...")
-        result = evaluate_algorithm(
-            algo_name, label_col,
-            train_df, test_df,
-            clustering_df, test_features, segments,
-            k=k, sample_size=sample_size
-        )
-        if result:
-            all_results.append(result)
-
-    if not all_results:
-        print("  ⚠️  Hiçbir algoritma değerlendirilemedi.")
+    if not result:
+        print("  ⚠️  Final algoritma değerlendirilemedi.")
         return {}
 
-    # Karşılaştırma tablosu
-    summary_df = pd.DataFrame(all_results)
+    summary_df = pd.DataFrame([result])
     summary_df.to_csv("outputs/reports/evaluation_comparison.csv", index=False)
 
     p_col, r_col = f"Precision@{k}", f"Recall@{k}"
 
     print(f"\n  {'='*55}")
-    print(f"  DEĞERLENDİRME KARŞILAŞTIRMASI (K={k})")
+    print(f"  FINAL ALGORİTMA DEĞERLENDİRMESİ (K={k})")
     print(f"  {'='*55}")
     print(f"  {'Algoritma':<10} {'Precision@'+str(k):<16} "
           f"{'Recall@'+str(k):<16} {'Değerlendirilen'}")
@@ -197,11 +162,10 @@ def run_evaluation(k: int = 5, sample_size: int = 200):
         print(f"  {row['algorithm']:<10} {row[p_col]:<16.4f} "
               f"{row[r_col]:<16.4f} {int(row['n_evaluated'])}")
 
-    # En iyi algoritma
-    best = summary_df.loc[summary_df[p_col].idxmax()]
-    print(f"\n  ✅ En iyi algoritma: {best['algorithm']} "
-          f"(Precision@{k}={best[p_col]:.4f}, "
-          f"Recall@{k}={best[r_col]:.4f})")
+    final = summary_df.iloc[0]
+    print(f"\n  ✅ Final algoritma: {final['algorithm']} "
+          f"(Precision@{k}={final[p_col]:.4f}, "
+          f"Recall@{k}={final[r_col]:.4f})")
     print(f"  {'='*55}\n")
 
     print("  Değerlendirme tamamlandı.")

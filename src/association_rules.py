@@ -1,5 +1,7 @@
-import pandas as pd
+import os
+
 import numpy as np
+import pandas as pd
 from mlxtend.frequent_patterns import apriori, association_rules
 
 
@@ -13,6 +15,27 @@ NOISE_ITEMS = {
     "AMAZON FEE", "CRUK COMMISSION", "SAMPLES", "PACKING CHARGE",
     "MANUAL", "ADJUST", "CHECK", "TEST", "DISCOUNT"
 }
+
+
+def get_best_clustering_algorithm() -> tuple[str, str]:
+    """En iyi kümeleme algoritmasını rapordan okur; dosya yoksa KMeans kullanır."""
+    path = "outputs/reports/best_clustering_model.txt"
+    label_map = {
+        "kmeans": ("kmeans_label", "KMeans"),
+        "k-means": ("kmeans_label", "KMeans"),
+        "dbscan": ("dbscan_label", "DBSCAN"),
+        "gmm": ("gmm_label", "GMM"),
+    }
+
+    try:
+        with open(path, "r", encoding="utf-8") as file:
+            raw_name = file.read().strip()
+    except FileNotFoundError:
+        raw_name = "KMeans"
+
+    label_col, algo_name = label_map.get(raw_name.lower(), ("kmeans_label", "KMeans"))
+    print(f"  Birliktelik analizi yalnızca en iyi algoritma için çalıştırılıyor: {algo_name}")
+    return label_col, algo_name
 
 def build_basket(df: pd.DataFrame) -> pd.DataFrame:
     # Anlamsız kalemleri temizle
@@ -81,28 +104,48 @@ def filter_recent_pairs(df: pd.DataFrame,
 # 3. HİBRİT PUANLAMA
 # ──────────────────────────────────────────
 
-def compute_hybrid_score(rules: pd.DataFrame,
-                          w_confidence: float = 0.4,
-                          w_lift: float = 0.6) -> pd.DataFrame:
+def compute_hybrid_score(rules: pd.DataFrame) -> pd.DataFrame:
     """
-    Öneri Skoru = w1 * Confidence + w2 * Normalized_Lift
-    Opsiyonel: Leverage ve Conviction da hesaplanır.
+    Association rule skorunu TOPSIS yöntemiyle hesaplar.
+    Tüm kriterler fayda kriteridir: confidence, lift, leverage, conviction.
     """
     if rules.empty:
         return rules
 
-    # Lift normalize et (0-1 arasına)
-    lift_min = rules["lift"].min()
-    lift_max = rules["lift"].max()
-    if lift_max > lift_min:
-        rules["lift_norm"] = (rules["lift"] - lift_min) / (lift_max - lift_min)
-    else:
-        rules["lift_norm"] = 1.0
+    criteria = [
+        col for col in ["confidence", "lift", "leverage", "conviction"]
+        if col in rules.columns
+    ]
+    if not criteria:
+        rules["hybrid_score"] = 0.0
+        rules["ranking_method"] = "TOPSIS"
+        return rules
 
-    rules["hybrid_score"] = (
-        w_confidence * rules["confidence"] +
-        w_lift       * rules["lift_norm"]
+    matrix = (
+        rules[criteria]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0)
+        .astype(float)
+        .to_numpy()
     )
+
+    # Vektör normalizasyonu ve eşit ağırlık
+    denominator = np.sqrt((matrix ** 2).sum(axis=0))
+    denominator[denominator == 0] = 1
+    weights = np.ones(len(criteria)) / len(criteria)
+    weighted = (matrix / denominator) * weights
+
+    # Tüm kriterler fayda kriteri olduğu için ideal maksimum, negatif ideal minimumdur.
+    ideal = weighted.max(axis=0)
+    negative_ideal = weighted.min(axis=0)
+    distance_to_ideal = np.sqrt(((weighted - ideal) ** 2).sum(axis=1))
+    distance_to_negative = np.sqrt(((weighted - negative_ideal) ** 2).sum(axis=1))
+    score_denominator = distance_to_ideal + distance_to_negative
+    score_denominator[score_denominator == 0] = 1
+
+    rules["hybrid_score"] = distance_to_negative / score_denominator
+    rules["ranking_method"] = "TOPSIS"
+    print("      Hybrid score TOPSIS yöntemiyle hesaplandı.")
 
     return rules
 
@@ -138,14 +181,22 @@ def tag_rule_type(rules: pd.DataFrame) -> pd.DataFrame:
 def mine_rules(basket: pd.DataFrame,
                df_segment: pd.DataFrame,
                min_support: float = 0.02,
-               min_lift: float = 1.2,       # Anlamlılık filtresi
+               min_lift: float = 1.0,       # Lift > 1 pozitif ilişkiyi gösterir
                min_confidence: float = 0.5,
-               apply_time_filter: bool = True) -> pd.DataFrame:
+               apply_time_filter: bool = False,
+               min_item_support: float = 0.01,
+               min_item_count: int = 2) -> tuple[pd.DataFrame, dict]:
 
-    MAX_COLS = 500
-    if basket.shape[1] > MAX_COLS:
-        top_cols = basket.sum().nlargest(MAX_COLS).index
-        basket   = basket[top_cols]
+    n_products_before = basket.shape[1]
+    item_support = basket.mean(axis=0)
+    item_count = basket.sum(axis=0)
+    valid_items = item_support[
+        (item_support >= min_item_support) & (item_count >= min_item_count)
+    ].index
+    basket = basket[valid_items]
+    n_products_after = basket.shape[1]
+
+    print(f"      Ürün frekans filtresi: {n_products_before} üründen {n_products_after} ürün kaldı")
 
     n_invoices = basket.shape[0]
     if n_invoices < 500:
@@ -153,14 +204,28 @@ def mine_rules(basket: pd.DataFrame,
     elif n_invoices < 2000:
         min_support = max(min_support, 0.03)
 
+    summary = {
+        "n_invoices": n_invoices,
+        "n_products_before_filter": n_products_before,
+        "n_products_after_filter": n_products_after,
+        "min_item_support": min_item_support,
+        "min_item_count": min_item_count,
+        "min_support_used": min_support,
+        "n_rules": 0,
+    }
+
+    if basket.empty or basket.shape[1] < 2:
+        return pd.DataFrame(), summary
+
     try:
         frequent = apriori(basket, min_support=min_support, use_colnames=True)
     except MemoryError:
         print("      ⚠️  Bellek yetersiz, min_support=0.10 ile tekrar deneniyor...")
+        summary["min_support_used"] = 0.10
         frequent = apriori(basket, min_support=0.10, use_colnames=True)
 
     if frequent.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     rules = association_rules(
         frequent, metric="lift", min_threshold=min_lift,
@@ -180,22 +245,16 @@ def mine_rules(basket: pd.DataFrame,
         rules = rules[rules["conviction"] > 1.0]
 
     if rules.empty:
-        return pd.DataFrame()
-
-    # Zaman serisi filtresi
-    if apply_time_filter and not df_segment.empty:
-        rules = filter_recent_pairs(df_segment, rules, months=6)
-
-    if rules.empty:
-        return pd.DataFrame()
+        return pd.DataFrame(), summary
 
     # Hibrit puanlama
     rules = compute_hybrid_score(rules)
 
     # hybrid_score'a göre sırala
     rules = rules.sort_values("hybrid_score", ascending=False)
+    summary["n_rules"] = len(rules)
 
-    return rules
+    return rules, summary
 
 
 # ──────────────────────────────────────────
@@ -215,6 +274,12 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
     df = df[df["segment"] != -1]
 
     all_rules = []
+    segment_summary_rows = []
+    segment_summary_columns = [
+        "algorithm", "segment", "n_transactions", "n_invoices",
+        "n_products_before_filter", "n_products_after_filter",
+        "min_item_support", "min_item_count", "min_support_used", "n_rules",
+    ]
     print(f"\n  [{algo_name}] Birliktelik Analizi:")
 
     for seg_id in sorted(df["segment"].unique()):
@@ -224,7 +289,29 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
         print(f"    Segment {seg_id}: {len(seg_df)} işlem, "
               f"{basket.shape[1]} ürün")
 
-        rules = mine_rules(basket, seg_df)
+        if basket.empty or basket.shape[1] < 2:
+            print(f"      Segment {seg_id} atlandı: birliktelik analizi için yeterli ürün yok.")
+            segment_summary_rows.append({
+                "algorithm": algo_name,
+                "segment": seg_id,
+                "n_transactions": len(seg_df),
+                "n_invoices": basket.shape[0],
+                "n_products_before_filter": basket.shape[1],
+                "n_products_after_filter": basket.shape[1],
+                "min_item_support": 0.01,
+                "min_item_count": 2,
+                "min_support_used": 0,
+                "n_rules": 0,
+            })
+            continue
+
+        rules, segment_summary = mine_rules(basket, seg_df)
+        segment_summary_rows.append({
+            "algorithm": algo_name,
+            "segment": seg_id,
+            "n_transactions": len(seg_df),
+            **segment_summary,
+        })
 
         if rules.empty:
             print(f"      ⚠️  Kural bulunamadı.")
@@ -233,13 +320,12 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
         rules["segment"]   = seg_id
         rules["algorithm"] = algo_name
 
-        # Küme baskınlık etiketi (segment bazlı)
-        rules = tag_rule_type(rules)
-
         all_rules.append(rules)
-        print(f"      ✅ {len(rules)} kural  "
-              f"(General: {(rules.get('rule_type','') == 'General').sum()}, "
-              f"Personalized: {(rules.get('rule_type','') == 'Personalized').sum()})")
+        print(f"      ✅ {len(rules)} kural")
+
+    pd.DataFrame(segment_summary_rows, columns=segment_summary_columns).to_csv(
+        "outputs/reports/association_segment_summary.csv", index=False
+    )
 
     if all_rules:
         combined = pd.concat(all_rules, ignore_index=True)
@@ -259,41 +345,34 @@ def run_rules_for_algorithm(df_train: pd.DataFrame,
 # ──────────────────────────────────────────
 
 def run_association_rules():
+    os.makedirs("outputs/reports", exist_ok=True)
+
     df_train = pd.read_csv("data/processed/online_retail_train.csv")
+    label_col, algo_name = get_best_clustering_algorithm()
 
-    algorithms = [
-        ("kmeans_label", "KMeans"),
-        ("dbscan_label", "DBSCAN"),
-        ("gmm_label",    "GMM"),
-    ]
+    # DBSCAN/GMM gibi diğer algoritmalar için Apriori çalıştırılmaz;
+    # gereksiz bellek tüketimini önlemek için yalnızca seçilen algoritma işlenir.
+    rules_df = run_rules_for_algorithm(df_train, label_col, algo_name)
 
-    summary_rows = []
-    all_combined = []
-
-    for label_col, algo_name in algorithms:
-        rules_df = run_rules_for_algorithm(df_train, label_col, algo_name)
-        if not rules_df.empty:
-            all_combined.append(rules_df)
-            summary_rows.append({
-                "algorithm":       algo_name,
-                "n_rules":         len(rules_df),
-                "avg_lift":        round(rules_df["lift"].mean(), 4),
-                "avg_confidence":  round(rules_df["confidence"].mean(), 4),
-                "avg_hybrid":      round(rules_df["hybrid_score"].mean(), 4),
-                "max_lift":        round(rules_df["lift"].max(), 4),
-                "n_general":       int((rules_df.get("rule_type", "") == "General").sum()),
-                "n_personalized":  int((rules_df.get("rule_type", "") == "Personalized").sum()),
-            })
-        else:
-            summary_rows.append({"algorithm": algo_name, "n_rules": 0,
-                                  "avg_lift": 0, "avg_confidence": 0,
-                                  "avg_hybrid": 0, "max_lift": 0,
-                                  "n_general": 0, "n_personalized": 0})
-
-    if all_combined:
-        pd.concat(all_combined, ignore_index=True).to_csv(
-            "outputs/reports/association_rules.csv", index=False
-        )
+    if not rules_df.empty:
+        rules_df.to_csv("outputs/reports/association_rules.csv", index=False)
+        summary_rows = [{
+            "algorithm":       algo_name,
+            "n_rules":         len(rules_df),
+            "avg_lift":        round(rules_df["lift"].mean(), 4),
+            "avg_confidence":  round(rules_df["confidence"].mean(), 4),
+            "avg_hybrid":      round(rules_df["hybrid_score"].mean(), 4),
+            "max_lift":        round(rules_df["lift"].max(), 4),
+            "n_general":       int((rules_df.get("rule_type", "") == "General").sum()),
+            "n_personalized":  int((rules_df.get("rule_type", "") == "Personalized").sum()),
+        }]
+    else:
+        summary_rows = [{
+            "algorithm": algo_name, "n_rules": 0,
+            "avg_lift": 0, "avg_confidence": 0,
+            "avg_hybrid": 0, "max_lift": 0,
+            "n_general": 0, "n_personalized": 0,
+        }]
 
     summary_df = pd.DataFrame(summary_rows)
     summary_df.to_csv("outputs/reports/association_rules_comparison.csv",

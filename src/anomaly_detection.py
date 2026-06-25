@@ -4,39 +4,42 @@ from sklearn.ensemble import IsolationForest
 from sklearn.preprocessing import StandardScaler
 
 
-# Modele verilecek sayısal sütunlar — kategorik/metin sütunlar dahil edilmez
-NUMERIC_COLS = [
+# RFM skorları model girdisi değil; yalnızca seçilmiş model feature'ları kullanılır.
+FALLBACK_MODEL_FEATURES = [
     "Recency", "Frequency", "Monetary",
     "total_items", "avg_basket_size",
     "avg_unit_price", "unique_products", "unique_days",
-    "R_score", "F_score", "M_score", "RFM_total",
+    "avg_basket_value", "purchase_span_days", "avg_days_between_orders",
 ]
+
+
+def _load_selected_features(features: pd.DataFrame) -> list[str]:
+    """Isolation Forest için selected_features.txt içindeki feature listesini okur."""
+    try:
+        with open("outputs/reports/selected_features.txt", "r", encoding="utf-8") as file:
+            selected = [line.strip() for line in file if line.strip()]
+    except FileNotFoundError:
+        selected = FALLBACK_MODEL_FEATURES
+
+    cols = [col for col in selected if col in features.columns]
+    if not cols:
+        raise ValueError("Anomali tespiti için kullanılabilecek seçilmiş feature bulunamadı.")
+    return cols
 
 
 def run_anomaly_detection(features=None):
     """
     Isolation Forest ile anormal müşterileri tespit eder.
-    Yalnızca sayısal sütunlar modele verilir;
-    'rfm_label', 'RFM_score' gibi kategorik/metin sütunlar dışlanır.
-
-    Returns
-    -------
-    features_clean : DataFrame
-        Anomaliler çıkarılmış, orijinal tüm sütunları koruyan DataFrame.
+    Model girdisi olarak yalnızca selected_features.txt içindeki feature'lar kullanılır;
+    R_score, F_score, M_score ve RFM_total modele dahil edilmez.
     """
 
     if features is None:
         features = pd.read_csv("data/processed/customer_features.csv",
                                index_col="CustomerID")
 
-    # Sadece mevcut sayısal sütunları seç
-    num_cols = [c for c in NUMERIC_COLS if c in features.columns]
-
-    # Yukarıdaki listede olmayan ama sayısal olan sütunları da ekle
-    extra_numeric = features.select_dtypes(include="number").columns.tolist()
-    all_numeric = list(dict.fromkeys(num_cols + extra_numeric))  # sıra koru, tekrar etme
-
-    X = features[all_numeric].fillna(0).values
+    model_cols = _load_selected_features(features)
+    X = features[model_cols].fillna(0)
 
     scaler = StandardScaler()
     X_scaled = scaler.fit_transform(X)
@@ -54,8 +57,9 @@ def run_anomaly_detection(features=None):
 
     n_anomaly = (features["anomaly"] == -1).sum()
     n_total   = len(features)
-    print(f"  Sayısal özellik sayısı : {len(all_numeric)}")
-    print(f"  Tespit edilen anomali  : {n_anomaly} / {n_total} "
+    print(f"  Seçilmiş model feature sayısı : {len(model_cols)}")
+    print(f"  Kullanılan feature'lar        : {', '.join(model_cols)}")
+    print(f"  Tespit edilen anomali         : {n_anomaly} / {n_total} "
           f"({n_anomaly / n_total:.1%})")
 
     # Anomalileri çıkar, orijinal sütun yapısını koru (anomaly kolonu hariç)
@@ -64,7 +68,7 @@ def run_anomaly_detection(features=None):
         .drop(columns=["anomaly"])
     )
 
-    print(f"  Temiz müşteri sayısı   : {len(features_clean)}")
+    print(f"  Temiz müşteri sayısı          : {len(features_clean)}")
     print("  Anomali analizi tamamlandı.")
 
     return features_clean
