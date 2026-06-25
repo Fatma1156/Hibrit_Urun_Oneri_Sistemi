@@ -1,5 +1,7 @@
 import pandas as pd
 
+from src.recommendation import recommend_products
+
 
 def get_final_algorithm() -> tuple[str, str]:
     """Final kümeleme algoritmasını okur; dosya yoksa KMeans kullanır."""
@@ -30,16 +32,6 @@ def recall_at_k(recommended: list, relevant: list, k: int) -> float:
     return len(set(recommended[:k]) & set(relevant)) / len(relevant)
 
 
-def parse_consequents(val) -> list:
-    if isinstance(val, (set, frozenset)):
-        return list(val)
-    val = str(val)
-    val = val.replace("frozenset(", "").replace(")", "")
-    val = val.replace("{", "").replace("}", "")
-    val = val.replace("'", "").replace('"', "")
-    return [v.strip() for v in val.split(",") if v.strip()]
-
-
 def get_segment_for_customer(cid, label_col, clustering_df):
     """Train döneminde segmenti bilinen müşterinin segment ID'sini döndürür."""
     row = clustering_df[clustering_df["CustomerID"] == cid]
@@ -59,19 +51,8 @@ def evaluate_algorithm(algo_name: str,
                         k: int = 5) -> dict:
     """
     Tek bir algoritma için Precision@K ve Recall@K hesaplar.
+    Öneriler doğrudan recommendation.py içindeki gerçek öneri fonksiyonundan alınır.
     """
-    # O algoritmaya ait birliktelik kurallarını yükle
-    rules_path = f"outputs/reports/association_rules_{algo_name.lower()}.csv"
-    try:
-        rules_df = pd.read_csv(rules_path)
-    except FileNotFoundError:
-        print(f"    ⚠️  {rules_path} bulunamadı, atlanıyor.")
-        return {}
-
-    rules_df["consequents_parsed"] = rules_df["consequents"].apply(
-        lambda x: parse_consequents(x)[0] if parse_consequents(x) else ""
-    )
-
     all_test_customers = test_df["CustomerID"].unique().tolist()
     train_customers = set(train_df["CustomerID"].unique().tolist())
     test_customers = [cid for cid in all_test_customers if cid in train_customers]
@@ -85,10 +66,6 @@ def evaluate_algorithm(algo_name: str,
         if seg is None:
             continue
 
-        bought_train = (
-            train_df[train_df["CustomerID"] == cid]["Description"]
-            .dropna().str.strip().str.upper().unique().tolist()
-        )
         bought_test = (
             test_df[test_df["CustomerID"] == cid]["Description"]
             .dropna().str.strip().str.upper().unique().tolist()
@@ -97,17 +74,17 @@ def evaluate_algorithm(algo_name: str,
         if not bought_test:
             continue
 
-        seg_rules = rules_df[rules_df["segment"] == seg].copy()
-        seg_rules = seg_rules[
-            ~seg_rules["consequents_parsed"].str.upper().isin(bought_train)
-        ]
-        seg_rules = seg_rules.sort_values("lift", ascending=False)
-        seg_rules = seg_rules.drop_duplicates(subset="consequents_parsed")
-
-        recommended = [
-            r.strip().upper()
-            for r in seg_rules["consequents_parsed"].head(k).tolist()
-        ]
+        recs = recommend_products(customer_id=cid, top_n=k)
+        recommended = []
+        if not recs.empty and "product" in recs.columns:
+            recommended = (
+                recs["product"]
+                .dropna()
+                .astype(str)
+                .str.strip()
+                .str.upper()
+                .tolist()
+            )
 
         results.append({
             "CustomerID":      cid,
@@ -120,6 +97,10 @@ def evaluate_algorithm(algo_name: str,
 
     if not results:
         print("  Değerlendirilen müşteri sayısı: 0")
+        pd.DataFrame(columns=[
+            "CustomerID", "segment", f"Precision@{k}", f"Recall@{k}",
+            "n_recommended", "n_relevant",
+        ]).to_csv(f"outputs/reports/evaluation_{algo_name.lower()}.csv", index=False)
         return {"algorithm": algo_name, f"Precision@{k}": 0,
                 f"Recall@{k}": 0, "n_evaluated": 0}
 
