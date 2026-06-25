@@ -223,8 +223,20 @@ def clean_data(**_ignored_options):
     test_df = df[df["InvoiceDate"] > cutoff_date].copy()
     train_ratio = len(train_df) / len(df) if len(df) else 0
     test_ratio = len(test_df) / len(df) if len(df) else 0
+    time_split_summary = pd.DataFrame([{
+        "cutoff_date": cutoff_date,
+        "train_rows": len(train_df),
+        "test_rows": len(test_df),
+        "train_ratio": train_ratio,
+        "test_ratio": test_ratio,
+        "train_start": train_df["InvoiceDate"].min(),
+        "train_end": train_df["InvoiceDate"].max(),
+        "test_start": test_df["InvoiceDate"].min(),
+        "test_end": test_df["InvoiceDate"].max(),
+    }])
 
     pd.DataFrame(log_rows).to_csv(f"{REPORTS_DIR}/cleaning_log.csv", index=False)
+    time_split_summary.to_csv(f"{REPORTS_DIR}/time_split_summary.csv", index=False)
     df.to_csv(f"{PROCESSED_DIR}/online_retail_clean.csv", index=False)
     train_df.to_csv(f"{PROCESSED_DIR}/online_retail_train.csv", index=False)
     test_df.to_csv(f"{PROCESSED_DIR}/online_retail_test.csv", index=False)

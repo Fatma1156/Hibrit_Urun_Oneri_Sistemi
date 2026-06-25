@@ -138,6 +138,68 @@ def _save_histogram(df: pd.DataFrame, column: str, path: str, title: str):
     plt.close()
 
 
+def _get_time_split_cutoff(analysis_df: pd.DataFrame) -> pd.Timestamp | None:
+    """80/20 zaman bazlı cutoff tarihini rapordan veya ham veriden geçici hesaplar."""
+    split_summary_path = f"{REPORTS_DIR}/time_split_summary.csv"
+    if os.path.exists(split_summary_path):
+        split_summary = pd.read_csv(split_summary_path)
+        if "cutoff_date" in split_summary.columns and not split_summary.empty:
+            cutoff = pd.to_datetime(split_summary.loc[0, "cutoff_date"], errors="coerce")
+            if pd.notna(cutoff):
+                return cutoff
+
+    dated_df = analysis_df[analysis_df["InvoiceDate"].notna()].sort_values("InvoiceDate")
+    if dated_df.empty:
+        return None
+    split_index = min(int(len(dated_df) * 0.80), len(dated_df) - 1)
+    return dated_df.iloc[split_index]["InvoiceDate"]
+
+
+def _save_monthly_purchase_summary(analysis_df: pd.DataFrame) -> bool:
+    """Ham veriden aylık satın alma hacmi raporu ve grafiği üretir."""
+    monthly_df = analysis_df[analysis_df["InvoiceDate"].notna()].copy()
+    if monthly_df.empty:
+        return False
+
+    monthly_df["month"] = monthly_df["InvoiceDate"].dt.to_period("M").dt.to_timestamp()
+    monthly_summary = (
+        monthly_df
+        .groupby("month")
+        .agg(
+            row_count=("InvoiceNo", "size"),
+            invoice_count=("InvoiceNo", "nunique"),
+            total_quantity=("Quantity", "sum"),
+            total_revenue=("TotalPrice", "sum"),
+        )
+        .reset_index()
+        .sort_values("month")
+    )
+
+    report_df = monthly_summary.copy()
+    report_df["month"] = report_df["month"].dt.strftime("%Y-%m")
+    report_df.to_csv(f"{REPORTS_DIR}/eda_monthly_purchase_summary.csv", index=False)
+
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax.plot(monthly_summary["month"], monthly_summary["row_count"],
+            marker="o", label="Satır sayısı")
+    ax.plot(monthly_summary["month"], monthly_summary["invoice_count"],
+            marker="s", label="Fatura sayısı")
+
+    cutoff_date = _get_time_split_cutoff(analysis_df)
+    if cutoff_date is not None:
+        ax.axvline(cutoff_date, color="red", linestyle="--", label="80/20 cutoff")
+
+    ax.set_title("Aylık Satın Alma Hacmi")
+    ax.set_xlabel("Ay")
+    ax.set_ylabel("İşlem/Fatura Sayısı")
+    ax.legend()
+    plt.xticks(rotation=45, ha="right")
+    plt.tight_layout()
+    plt.savefig(f"{FIGURES_DIR}/eda_monthly_purchase_volume.png")
+    plt.close()
+    return cutoff_date is not None
+
+
 def run_eda():
     """
     Ham veri üzerinde keşifsel veri analizi yapar.
@@ -176,6 +238,7 @@ def run_eda():
 
     # TotalPrice yalnızca EDA içindeki sayısal özet ve korelasyon için geçici analiz sütunudur.
     analysis_df = df.copy()
+    analysis_df["InvoiceDate"] = pd.to_datetime(analysis_df["InvoiceDate"], errors="coerce")
     analysis_df["TotalPrice"] = analysis_df["Quantity"] * analysis_df["UnitPrice"]
 
     numeric_summary = analysis_df[["Quantity", "UnitPrice", "TotalPrice"]].describe().T
@@ -183,6 +246,7 @@ def run_eda():
 
     correlation = analysis_df[["Quantity", "UnitPrice", "TotalPrice"]].corr(numeric_only=True)
     correlation.to_csv(f"{REPORTS_DIR}/eda_correlation_matrix.csv")
+    cutoff_added = _save_monthly_purchase_summary(analysis_df)
 
     # Sepet analizleri için Description kalıcı değiştirilmez; geçici temiz alan kullanılır.
     basket_df = df.copy()
@@ -252,6 +316,10 @@ def run_eda():
 
     print("\n  EDA raporları kaydedildi → outputs/reports/")
     print("  EDA grafikleri kaydedildi → outputs/figures/")
+    print("  Aylık satın alma özeti kaydedildi.")
+    print("  Aylık satın alma hacmi grafiği kaydedildi.")
+    if cutoff_added:
+        print("  80/20 cutoff çizgisi grafiğe eklendi.")
     print("  EDA tamamlandı; ham veri üzerinde satır silinmedi.")
     return df
 
