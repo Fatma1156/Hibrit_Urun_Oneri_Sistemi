@@ -386,6 +386,13 @@ def run_clustering(features: pd.DataFrame):
     best_k_kmeans, kmeans_k_df = select_best_k_kmeans(X, K)
     best_k_gmm, bic_scores, aic_scores = find_best_k_bic(X, K)
 
+    # Elbow analizinde belirgin dirsek noktası k=3 olarak gözlenmiştir.
+    # Öneri sistemi uygulamalarında yalnızca kümeleme metrikleri değil,
+    # segmentlerden üretilebilen birliktelik kuralları ve öneri başarısı da önemlidir.
+    # Bu nedenle final modelde manuel olarak k=3 tercih edilmiştir.
+    final_k_kmeans = 3
+    elbow_display_k = 3
+
     # Elbow grafiği yalnızca görsel destek olarak korunur;
     # K-Means k seçimi rank toplamıyla, GMM k seçimi BIC ile yapılır.
     plot_k_comparison(
@@ -396,12 +403,15 @@ def run_clustering(features: pd.DataFrame):
         aic_scores,
     )
 
-    print(f"\n  K-Means best_k={best_k_kmeans}  |  "
-          f"GMM best_k={best_k_gmm}  |  "
+    print(f"\n  Elbow yöntemi önerisi      : k={elbow_display_k}")
+    print(f"  Çok kriterli seçim sonucu  : k={best_k_kmeans}")
+    print(f"  Final kullanılan k         : {final_k_kmeans} (manuel seçim)")
+    print(f"  GMM best_k={best_k_gmm}  |  "
           f"DBSCAN k kullanmaz (eps/min_samples veri temelli seçilir)")
 
     print("\n  Algoritmalar çalıştırılıyor...")
-    labels_km,     metrics_km,     _ = run_kmeans(X, best_k_kmeans)
+    print(f"  KMeans → k={final_k_kmeans} ile çalıştırılıyor...")
+    labels_km,     metrics_km,     _ = run_kmeans(X, final_k_kmeans)
     labels_dbscan, metrics_dbscan, _ = run_dbscan(X, n_features=len(feature_cols))
     labels_gmm,    metrics_gmm,    _ = run_gmm(X, best_k_gmm)
 
