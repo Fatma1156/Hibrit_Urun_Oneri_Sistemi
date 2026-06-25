@@ -214,8 +214,9 @@ def _prepare_recommendation_scores(seg_rules: pd.DataFrame,
     else:
         base_score = 0.0
 
+    # Eşit ağırlıklandırma: kural kalitesi ve müşteri geçmişi aynı önemde kabul edilmiştir.
     seg_rules["personalized_score"] = (
-        0.70 * base_score + 0.30 * seg_rules["history_match_ratio"]
+        0.50 * base_score + 0.50 * seg_rules["history_match_ratio"]
     )
 
     if "rule_type" in seg_rules.columns:

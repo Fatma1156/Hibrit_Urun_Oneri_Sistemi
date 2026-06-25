@@ -214,18 +214,15 @@ def clean_data(**_ignored_options):
         "TotalPrice = Quantity * UnitPrice; satır silinmedi.",
     )
 
-    # Zaman bazlı split: aynı gün içindeki kayıtlar bölünmeden geçmişten geleceğe ayrılır.
+    # Zaman bazlı split: cutoff tarihi veri içindeki %80 satır konumundan otomatik belirlenir.
     df = df.sort_values("InvoiceDate").reset_index(drop=True)
-    unique_dates = (
-        pd.Series(df["InvoiceDate"].dt.date.unique())
-        .sort_values()
-        .reset_index(drop=True)
-    )
-    cutoff_idx = min(int(len(unique_dates) * 0.8), len(unique_dates) - 1)
-    cutoff_date = pd.Timestamp(unique_dates.iloc[cutoff_idx])
+    split_index = min(int(len(df) * 0.80), len(df) - 1)
+    cutoff_date = df.iloc[split_index]["InvoiceDate"]
 
-    train_df = df[df["InvoiceDate"].dt.date <= cutoff_date.date()].copy()
-    test_df = df[df["InvoiceDate"].dt.date > cutoff_date.date()].copy()
+    train_df = df[df["InvoiceDate"] <= cutoff_date].copy()
+    test_df = df[df["InvoiceDate"] > cutoff_date].copy()
+    train_ratio = len(train_df) / len(df) if len(df) else 0
+    test_ratio = len(test_df) / len(df) if len(df) else 0
 
     pd.DataFrame(log_rows).to_csv(f"{REPORTS_DIR}/cleaning_log.csv", index=False)
     df.to_csv(f"{PROCESSED_DIR}/online_retail_clean.csv", index=False)
@@ -236,6 +233,8 @@ def clean_data(**_ignored_options):
     print(f"  Cutoff tarihi            : {cutoff_date.date()}")
     print(f"  Train satır sayısı       : {len(train_df):,}")
     print(f"  Test satır sayısı        : {len(test_df):,}")
+    print(f"  Train oranı              : {train_ratio:.2%}")
+    print(f"  Test oranı               : {test_ratio:.2%}")
     print(f"  Train tarih aralığı      : {train_df['InvoiceDate'].min()} → {train_df['InvoiceDate'].max()}")
     print(f"  Test tarih aralığı       : {test_df['InvoiceDate'].min()} → {test_df['InvoiceDate'].max()}")
 
